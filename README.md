@@ -50,7 +50,7 @@ before an agent session and compare after it to see what was added or changed.
 | Command | What it does |
 |---|---|
 | `glassbox reach` | Report what a process started like this one can read |
-| `glassbox reach --json` | The same report as JSON, for scripts and agent harnesses |
+| `glassbox reach --json` | The same report as JSON, for scripts and agent tooling |
 | `glassbox reach --strict` | Exit 1 if any sensitive location is readable |
 | `glassbox reach --home DIR` | Audit `DIR` instead of `$HOME` |
 | `glassbox models` | List local models and how much of each is in the page cache |
@@ -96,9 +96,9 @@ glassbox models
 
 - [Commands](docs/commands.md): each command's options, output and exit status.
 - [Suite study](docs/suite-study.md): every Sysinternals tool assessed for a macOS/Linux port and for
-  its value to agent harnesses and inference.
+  its value to agent tooling and inference.
 - [Using glassbox with other tools](docs/integration.md): real runs with git-overlap, pr-merge-audit,
-  a harness installer and devdrop.
+  an agent tool installer and devdrop.
 - [Feasibility](docs/feasibility.md): prior art and feasibility for the five candidate tools, and
   why `reach` came first.
 

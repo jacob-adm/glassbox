@@ -70,15 +70,18 @@ pr-merge-audit --config config.json build --snapshot "$SNAPSHOT"
 glassbox persist --since before-build.snapshot --strict
 ```
 
-**Verdict: works together.** Two points of friction in pr-merge-audit, both by design but worth knowing:
+**Verdict: works together.** Two settings matter when the repository is private or the project uses
+rustup:
 
-- Its `snapshot` step runs git without credentials or global configuration, so it cannot fetch a
-  private GitHub repository. Its documented route for other hosts works: write
-  `snapshots/DATE.json` and a `git bundle` with `refs/audit/base` and `refs/audit/pr/N` by hand, then
-  run `build` offline.
-- Tests run with a private `HOME`. With a rustup-managed toolchain, `cargo` then finds no toolchain and
-  the base fails. Pass the toolchain location in `test_cmd`:
-  `["/usr/bin/env", "RUSTUP_HOME=/Users/me/.rustup", "CARGO_HOME=/Users/me/.cargo", "/Users/me/.cargo/bin/cargo", "test", "--locked"]`.
+- `snapshot` sends `GITHUB_TOKEN` only to the GitHub API and fetches pull request heads with git
+  without credentials. For a private repository, fetch the heads into a local bare mirror with your
+  own credentials (`git clone --bare …`, then
+  `git -C mirror.git fetch origin '+refs/pull/*/head:refs/pull/*/head'`) and set `remote` to the
+  mirror's path. The run above wrote the snapshot files by hand instead, which pr-merge-audit also
+  supports.
+- Tests run with their own `HOME`, so rustup and cargo, which default to paths under your home
+  directory, need their locations in the configuration's `env`:
+  `{"RUSTUP_HOME": "/Users/me/.rustup", "CARGO_HOME": "/Users/me/.cargo"}`.
 
 ## An agent tool installer: what it adds to a repository
 

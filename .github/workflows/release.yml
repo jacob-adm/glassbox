@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: Apache-2.0
+# Publishes a version tag to crates.io through trusted publishing: no token is stored anywhere.
+# The publish job runs in the "crates-io" environment, which waits for the owner's approval.
+# It runs only when the repository variable PUBLISH_TO_CRATES is "true". Unset, a tag
+# still builds, tests and packages the crate but publishes nothing.
+# Hosted runners are not available to this repository while it is private, so the jobs
+# run only once it is public.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.event.repository.visibility == 'public'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      # A tag that disagrees with the crate version must never publish.
+      - name: Tag matches the crate version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          test "v$version" = "$GITHUB_REF_NAME"
+      - run: cargo test --locked
+      - run: cargo build --release --locked
+      - run: cargo package --locked
+      - uses: actions/upload-artifact@v4
+        with:
+          name: glassbox-${{ matrix.os }}
+          path: target/release/glassbox
+
+  publish:
+    needs: build
+    if: github.event.repository.visibility == 'public' && vars.PUBLISH_TO_CRATES == 'true'
+    runs-on: ubuntu-24.04
+    environment: crates-io
+    permissions:
+      id-token: write   # proves this workflow's identity to crates.io; nothing else
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      - run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

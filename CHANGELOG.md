@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- `watch`: follows a local agent session transcript (Claude Code JSON lines) and, when the agent
+  repeats an identical tool call 4 times in a row, produces more than 16,000 output tokens in a turn,
+  or fails 5 tool calls in a row, writes a capture with the trigger, the persistence points added or
+  changed since watching began, uncommitted changes in `--repo` and the process tree under `--pid`.
+  `--pause` stops the agent; `--once` scans a whole transcript. Thresholds are configurable.
+  Transcript content is never copied into output or captures.
+
 ## 0.1.0 - 2026-11-19
 
 First version. glassbox audits what AI agents and other local processes can access on macOS and

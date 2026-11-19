@@ -263,3 +263,73 @@ Without `--since`, `--json` prints `{"items":[{"category":…,"path":…,"sha256
   never written through.
 - An agent that can write to the snapshot file can hide its changes. Keep the snapshot where the agent
   cannot write, for example outside its sandbox or working directory.
+
+## `glassbox watch`
+
+```
+glassbox watch [TRANSCRIPT] [--once] [--out DIR] [--loop N] [--spike TOKENS] [--failures N]
+               [--pid PID [--pause]] [--repo DIR]... [--home DIR]
+```
+
+Follows a local agent session and captures the machine's state when the agent goes wrong.
+
+| Option | Effect |
+|---|---|
+| `TRANSCRIPT` | The session file to follow. Default: the most recently modified `~/.claude/projects/*/*.jsonl` |
+| `--once` | Scan the whole transcript instead of following it; exit 1 if any trigger fires |
+| `--out DIR` | Where captures go. Default when following: `~/.local/state/glassbox/captures`. With `--once`, captures are written only if `--out` is given |
+| `--loop N` | Identical tool calls (same tool, same arguments) in a row that count as a loop (default 4) |
+| `--spike TOKENS` | Output tokens in one assistant turn that count as a spike (default 16000) |
+| `--failures N` | Failed tool calls in a row (default 5) |
+| `--pid PID` | The agent's process: its process tree goes into each capture, and watching stops when it exits |
+| `--pause` | With `--pid`: stop the agent (SIGSTOP) when a trigger fires. Resume it with `kill -CONT PID` |
+| `--repo DIR` | Also watch `DIR`'s persistence points and record its uncommitted changes; repeatable |
+| `--home DIR` | Use `DIR` instead of `$HOME` |
+
+### How it works
+
+When following, glassbox starts at the end of the transcript, so what is already there does not
+fire, and takes a `persist` snapshot. Each new line is parsed for structure only: record type, tool
+name, a SHA-256 of the tool name and arguments, output token count and the tool result's error flag.
+A loop fires once when a run of identical calls reaches the threshold; failures fire once when a run
+of failed results reaches it; a spike fires for each turn over the threshold.
+
+The default thresholds come from real sessions: across 1,309 tool calls in three sessions, no
+identical call ran more than twice in a row, and no turn produced more than 9,821 output tokens.
+Across 10 real sessions, `--once` with the defaults fired nothing.
+
+### Captures
+
+Each trigger writes a directory `<seconds>-<n>-<kind>` with:
+
+| File | Contents |
+|---|---|
+| `trigger.json` | Kind (`loop`, `spike`, `failures`), observed value, threshold, tool name and call hash (loops), transcript line and path |
+| `persist.json` | Persistence points added, changed or removed since watching began (`persist --since` format) |
+| `repos.txt` | `git status --porcelain` for each `--repo`: file names and states, no diffs |
+| `processes.txt` | pid, parent, state and command name for `--pid` and every process below it |
+
+No message text or tool arguments are copied into a capture or printed.
+
+### Output
+
+```
+glassbox watch: watching ~/.claude/projects/…/session.jsonl (loop 4, spike 16000, failures 5); captures in ~/.local/state/glassbox/captures
+trigger loop: 4 identical Bash calls in a row (line 812); capture: ~/.local/state/glassbox/captures/1795540000-1-loop; paused 4242, resume with: kill -CONT 4242
+```
+
+### Exit status
+
+| Status | When |
+|---|---|
+| 0 | `--once` and nothing fired; or following stopped because `--pid` exited |
+| 1 | `--once` and at least one trigger fired |
+| 2 | Usage error, no transcript found, an unreadable transcript, or a format glassbox does not know |
+
+### Limits
+
+- Claude Code transcripts only. Their format is not a documented interface; a file with no record
+  glassbox recognises is refused (exit 2) rather than watched silently.
+- Captures go under your home directory by default, outside any repository you watch. An `--out`
+  inside a watched repository shows up in that repository's uncommitted changes.
+- Thresholds were set from a small number of real sessions; adjust them for your own work.

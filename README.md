@@ -5,9 +5,9 @@ glassbox audits what AI agents and other local processes can access on macOS and
 An agent started from your terminal runs as you. It inherits your files, your credentials and, on
 macOS, the privacy grants (such as Full Disk Access) of the app it was launched from. glassbox shows
 that reach before you start the agent, and reports how much of each local AI model is already in
-memory. It is a single Rust binary with no dependencies.
+memory, and shows what an agent session set up to run again later. It is a single Rust binary with no dependencies.
 
-Status: 0.1.0, unreleased. Two commands: `reach` and `models`.
+Status: 0.1.0, unreleased. Three commands: `reach`, `models` and `persist`.
 
 ## Install
 
@@ -40,6 +40,11 @@ directory given with `--dir`) and maps each one read-only to ask the kernel whic
 page cache (`mincore`). No page is read, so measuring does not load the model. A model that is in
 the page cache loads from memory; one that is not loads from disk.
 
+`glassbox persist` hashes (SHA-256) every persistence point: launch agents and daemons, systemd
+units, autostart entries, cron, shell startup files, SSH and git configuration, git hooks, Python
+startup files, and AI agent configurations (Claude Code, Cursor, Codex, Gemini). Save a snapshot
+before an agent session and compare after it to see what was added or changed.
+
 ## Commands
 
 | Command | What it does |
@@ -51,6 +56,10 @@ the page cache loads from memory; one that is not loads from disk.
 | `glassbox models` | List local models and how much of each is in the page cache |
 | `glassbox models --dir DIR` | Also search `DIR` for `.gguf` and `.safetensors` files |
 | `glassbox models --json` | The same list as JSON |
+| `glassbox persist` | List persistence points |
+| `glassbox persist --save FILE` | Save a snapshot of them |
+| `glassbox persist --since FILE --strict` | Report what was added, changed or removed; exit 1 if anything was added or changed |
+| `glassbox persist --repo DIR` | Also watch a repository's git hooks, git config and agent configs |
 
 See [Commands](docs/commands.md) for the full output, exit status and location list.
 
@@ -67,6 +76,14 @@ to start an agent while any are readable:
 
 ```sh
 glassbox reach --strict --json > reach.json && my-agent
+```
+
+To check what an agent session left behind:
+
+```sh
+glassbox persist --repo . --save before.snapshot
+my-agent
+glassbox persist --repo . --since before.snapshot --strict
 ```
 
 To see which local models will load quickly:

@@ -155,3 +155,86 @@ Models are sorted by bytes in memory, then name.
   its weights in GPU or other anonymous memory, which is not counted. Use the server's own status
   (for example `ollama ps`) for that.
 - Only `.gguf` and `.safetensors` files are counted; PyTorch `.bin` checkpoints are not.
+
+## `glassbox persist`
+
+```
+glassbox persist [--json] [--home DIR] [--repo DIR]...
+glassbox persist --save FILE [--home DIR] [--repo DIR]...
+glassbox persist --since FILE [--strict] [--json] [--home DIR] [--repo DIR]...
+```
+
+Lists persistence points, the places where something can be set up to run again later, with a
+SHA-256 of each. Save a snapshot before an agent session and compare with it afterwards.
+
+| Option | Effect |
+|---|---|
+| `--save FILE` | Write a snapshot (paths, categories and hashes; no contents) |
+| `--since FILE` | Compare the current state with the snapshot |
+| `--strict` | With `--since`: exit 1 if anything was added or changed |
+| `--json` | Print JSON |
+| `--home DIR` | Use `DIR` instead of `$HOME` for per-user locations |
+| `--repo DIR` | Also watch `DIR/.git/hooks`, `DIR/.git/config`, `.mcp.json`, `.claude/settings.json`, `.cursor/mcp.json` and `.vscode/mcp.json`; repeatable |
+
+### What is watched
+
+| Category | macOS | Linux |
+|---|---|---|
+| autostart | `~/Library/LaunchAgents`, `/Library/LaunchAgents` | `~/.config/systemd/user`, `~/.local/share/systemd/user`, `~/.config/autostart`, `/etc/xdg/autostart` |
+| system service | `/Library/LaunchDaemons` | `/etc/systemd/system`, `/etc/rc.local` |
+| cron | `crontab -l` | `crontab -l`, `/etc/crontab`, `/etc/cron.d` |
+| preload | – | `/etc/ld.so.preload` |
+| shell startup | `.zshrc`, `.zprofile`, `.zshenv`, `.zlogin`, `.zlogout`, `.bashrc`, `.bash_profile`, `.bash_login`, `.bash_logout`, `.profile`, fish `config.fish` and `conf.d` | the same, plus `/etc/profile.d` |
+| ssh | `~/.ssh/rc`, `environment`, `authorized_keys`, `authorized_keys2`, `config` | the same |
+| git config | `~/.gitconfig`, `~/.config/git/config`, each `--repo`'s `.git/config` | the same |
+| git hook | each `--repo`'s `.git/hooks` | the same |
+| python startup | `.pth`, `usercustomize.py`, `sitecustomize.py` in `~/Library/Python/*/…/site-packages` | the same in `~/.local/lib/python*/site-packages` |
+| agent config | `~/.claude/settings.json`, `~/.claude/settings.local.json`, `~/.cursor/mcp.json`, `~/.codex/config.toml`, `~/.gemini/settings.json`, and the `mcpServers` and `hooks` sections of `~/.claude.json` | the same |
+
+`~/.claude.json` is rewritten with usage data on every session, so only its `mcpServers` and `hooks`
+sections are hashed, at any depth and with keys sorted. Usage counters and key order do not register
+as changes. If the file is not valid JSON, the whole file is hashed.
+
+### Results
+
+| Change | Meaning | Fails `--strict` |
+|---|---|---|
+| `added` | A persistence point exists that was not in the snapshot | yes |
+| `changed` | Its content hash differs from the snapshot | yes |
+| `removed` | It was in the snapshot and is gone | no |
+
+Content is compared by SHA-256, so rewriting a file with the same content, or changing only its
+modification time, is not a change.
+
+### Text output
+
+```
++ added    autostart       ~/Library/LaunchAgents/com.example.agent.plist
+~ changed  shell startup   ~/.zshrc
+- removed  shell startup   ~/.profile
+```
+
+### JSON output
+
+```json
+{"changes":[{"change":"added","category":"autostart","path":"~/Library/LaunchAgents/com.example.agent.plist"}]}
+```
+
+Without `--since`, `--json` prints `{"items":[{"category":…,"path":…,"sha256":…}]}`.
+
+### Exit status
+
+| Status | When |
+|---|---|
+| 0 | Listed, saved, or compared. With `--strict`, also: nothing added or changed |
+| 1 | `--since --strict` and something was added or changed |
+| 2 | Usage error, or the snapshot cannot be read or written |
+
+### Limits
+
+- macOS login items registered through Background Task Management (`sfltool dumpbtm`) are not read,
+  because reading them requires administrator authentication.
+- Only your own crontab is read; other users' crontabs require root.
+- A file that cannot be read is compared by size and modification time instead of content.
+- An agent that can write to the snapshot file can hide its changes. Keep the snapshot where the agent
+  cannot write, for example outside its sandbox or working directory.

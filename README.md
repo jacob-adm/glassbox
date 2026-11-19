@@ -11,7 +11,13 @@ Status: 0.2.0. Four commands: `reach`, `models`, `persist` and `watch`.
 
 ## Install
 
-Download the archive for your platform from the
+With Homebrew (macOS on Apple silicon, Linux x86-64 and ARM64):
+
+```
+brew install jacob-adm/tap/glassbox
+```
+
+Or download the archive for your platform from the
 [latest release](https://github.com/jacob-adm/glassbox/releases/latest), check it against
 `SHA256SUMS`, and put `glassbox` on your `PATH`. Builds: macOS on Apple silicon, Linux x86-64 and
 Linux ARM64 (glibc 2.31 or later).

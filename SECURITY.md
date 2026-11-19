@@ -18,6 +18,12 @@ directory that may hold credentials and private data, to find out whether they *
 - **`persist` hashes, never prints.** Persistence files are read to compute a SHA-256 of each; output
   and snapshots contain paths, categories and hashes only, never file contents. For `~/.claude.json`
   only the `mcpServers` and `hooks` sections are hashed.
+- **`watch` reads structure, not content.** Transcripts are parsed for record types, tool names,
+  a SHA-256 of each tool call's arguments, token counts and error flags. Output and captures hold
+  those, never message text or tool arguments. The process tree records command names, not their
+  arguments, which can hold secrets. `--pause` sends SIGSTOP to the process you name with `--pid`, and
+  nothing else, and never while scanning past activity with `--once`. Capture directories and files are
+  always created new, so a link planted by the watched agent cannot redirect a write.
 - **Runs nothing from the paths it probes.** `persist` runs `crontab -l` to read your own crontab; on macOS `reach` runs `ps` (from `PATH`) to read the process
   chain; on Linux it reads `/proc`. Arguments are passed directly, never through a shell.
 - **Treats every file as possibly hostile.** The audited agents can write the files glassbox reads.

@@ -8,7 +8,17 @@ use std::process::ExitCode;
 const USAGE: &str = "usage: glassbox reach  [--json] [--strict] [--home DIR]
        glassbox models [--json] [--home DIR] [--dir DIR]...
        glassbox persist [--save FILE | --since FILE [--strict]] [--json] [--home DIR] [--repo DIR]...
+       glassbox watch [TRANSCRIPT] [--once] [--out DIR] [--loop N] [--spike TOKENS] [--failures N]
+                      [--pid PID [--pause]] [--repo DIR]... [--home DIR]
 
+watch   Follows a local agent session transcript (default: the newest Claude Code
+        session) from its end. When an agent repeats an identical tool call --loop
+        times in a row (4), produces more than --spike output tokens in a turn
+        (16000), or fails --failures tool calls in a row (5), it writes a capture:
+        the trigger, persistence added or changed since watching began, git changes
+        in --repo, and the process tree under --pid. --pause stops --pid. --once
+        scans the whole transcript and exits 1 if anything fired. Transcript content
+        is never copied.
 reach   Reports what a process started like this one (for example an agent
         launched from this terminal) could read. Opens each location
         read-only; never reads contents, never lists directories, never writes.
@@ -37,12 +47,18 @@ struct Args {
     repos: Vec<PathBuf>,
     save: Option<PathBuf>,
     since: Option<PathBuf>,
+    transcript: Option<PathBuf>,
+    once_scan: bool,
+    out: Option<PathBuf>,
+    thresholds: glassbox::watch::Thresholds,
+    pid: Option<i32>,
+    pause: bool,
 }
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let command = args.first().map(String::as_str);
-    if !matches!(command, Some("reach" | "models" | "persist")) {
+    if !matches!(command, Some("reach" | "models" | "persist" | "watch")) {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
     }
@@ -57,6 +73,9 @@ fn main() -> ExitCode {
         eprintln!("HOME is not set; pass --home");
         return ExitCode::from(2);
     };
+    if command == Some("watch") {
+        return run_watch(&home, &a);
+    }
     if command == Some("persist") {
         return run_persist(&home, &a);
     }
@@ -78,8 +97,23 @@ fn main() -> ExitCode {
 /// Each option is accepted only by the commands it affects, at most once (except the
 /// repeatable --dir and --repo), and an option never consumes another option as its value.
 fn parse_args(command: &str, args: &[String]) -> Result<Args, String> {
-    let mut a = Args { json: false, strict: false, home: None, dirs: Vec::new(), repos: Vec::new(), save: None, since: None };
+    let mut a = Args {
+        json: false,
+        strict: false,
+        home: None,
+        dirs: Vec::new(),
+        repos: Vec::new(),
+        save: None,
+        since: None,
+        transcript: None,
+        once_scan: false,
+        out: None,
+        thresholds: glassbox::watch::DEFAULTS,
+        pid: None,
+        pause: false,
+    };
     let mut it = args.iter();
+    let mut seen = std::collections::BTreeSet::new();
     while let Some(arg) = it.next() {
         let mut value = || match it.next() {
             Some(v) if !v.starts_with("--") => Ok(PathBuf::from(v)),
@@ -94,7 +128,26 @@ fn parse_args(command: &str, args: &[String]) -> Result<Args, String> {
                 a.home = Some(value()?);
             }
             ("--dir", "models") => a.dirs.push(value()?),
-            ("--repo", "persist") => a.repos.push(value()?),
+            ("--repo", "persist" | "watch") => a.repos.push(value()?),
+            ("--once", "watch") => a.once_scan = true,
+            ("--pause", "watch") => a.pause = true,
+            ("--out", "watch") => {
+                once(&a.out)?;
+                a.out = Some(value()?);
+            }
+            ("--loop" | "--spike" | "--failures" | "--pid", "watch") => {
+                if !seen.insert(arg.clone()) {
+                    return Err(format!("{arg} given twice"));
+                }
+                let n: u64 = value()?.to_str().and_then(|v| v.parse().ok()).filter(|n| *n > 0).ok_or(format!("{arg} needs a positive number"))?;
+                match arg.as_str() {
+                    "--loop" => a.thresholds.repeats = n,
+                    "--spike" => a.thresholds.spike = n,
+                    "--failures" => a.thresholds.failures = n,
+                    _ => a.pid = Some(i32::try_from(n).map_err(|_| "--pid is out of range".to_string())?),
+                }
+            }
+            (path, "watch") if !path.starts_with("--") && a.transcript.is_none() => a.transcript = Some(PathBuf::from(path)),
             ("--save", "persist") => {
                 once(&a.save)?;
                 a.save = Some(value()?);
@@ -108,6 +161,12 @@ fn parse_args(command: &str, args: &[String]) -> Result<Args, String> {
     }
     if a.save.is_some() && a.since.is_some() {
         return Err("use --save or --since, not both".into());
+    }
+    if a.pause && a.pid.is_none() {
+        return Err("--pause needs --pid".into());
+    }
+    if a.pause && a.once_scan {
+        return Err("--pause cannot be used with --once: a scan of past activity must not stop a live process".into());
     }
     if command == "persist" && a.strict && a.since.is_none() {
         return Err("--strict needs --since".into());
@@ -138,12 +197,7 @@ fn print_text(findings: &[Finding], chain: &[(u32, String)]) {
 }
 
 fn esc(s: &str) -> String {
-    s.chars().flat_map(|c| match c {
-        '"' => "\\\"".chars().collect::<Vec<_>>(),
-        '\\' => "\\\\".chars().collect(),
-        c if (c as u32) < 0x20 => format!("\\u{:04x}", c as u32).chars().collect(),
-        c => vec![c],
-    }).collect()
+    glassbox::safe::json_escape(s)
 }
 
 fn print_json(findings: &[Finding], chain: &[(u32, String)]) {
@@ -252,4 +306,102 @@ fn run_persist(home: &Path, a: &Args) -> ExitCode {
     }
     let flagged = changes.iter().any(|(c, _)| *c != Change::Removed);
     if a.strict && flagged { ExitCode::from(1) } else { ExitCode::SUCCESS }
+}
+
+fn run_watch(home: &Path, a: &Args) -> ExitCode {
+    use glassbox::watch::{self, Context, Detector, Follower};
+    use std::io::Write;
+    let Some(path) = a.transcript.clone().or_else(|| watch::latest_transcript(home)) else {
+        eprintln!("no transcript given and none found under {}/.claude/projects", home.display());
+        return ExitCode::from(2);
+    };
+    match watch::recognised_format(&path) {
+        Ok(true) => {}
+        Ok(false) => {
+            eprintln!("{}: not a transcript format glassbox knows (Claude Code JSON lines)", path.display());
+            return ExitCode::from(2);
+        }
+        Err(e) => {
+            eprintln!("cannot read {}: {e}", path.display());
+            return ExitCode::from(2);
+        }
+    }
+    let t = &a.thresholds;
+    let lines_before = if a.once_scan { 0 } else { watch::line_count(&path).unwrap_or(0) };
+    let mut detector = Detector::new(*t, lines_before);
+    let mut seq = 0u64;
+    let mut fired_any = false;
+    let mut handle = |trigger: watch::Trigger, ctx: &Context, out: Option<&Path>| {
+        fired_any = true;
+        seq += 1;
+        let mut line = format!("trigger {}", trigger.describe());
+        if let Some(out) = out {
+            match watch::capture(out, seq, &trigger, ctx) {
+                Ok(dir) => line.push_str(&format!("; capture: {}", dir.display())),
+                Err(e) => line.push_str(&format!("; capture failed: {e}")),
+            }
+        }
+        if let (true, Some(pid)) = (a.pause, a.pid) {
+            match watch::pause(pid) {
+                Ok(()) => line.push_str(&format!("; paused {pid}, resume with: kill -CONT {pid}")),
+                Err(e) => line.push_str(&format!("; could not pause {pid}: {e}")),
+            }
+        }
+        println!("{line}");
+        let _ = std::io::stdout().flush();
+    };
+
+    if a.once_scan {
+        let ctx = Context { transcript: &path, home, repos: &a.repos, pid: a.pid, baseline: None };
+        let scanned = watch::for_each_line(&path, |line| {
+            for trigger in detector.feed(line) {
+                handle(trigger, &ctx, a.out.as_deref());
+            }
+        });
+        if let Err(e) = scanned {
+            eprintln!("cannot read {}: {e}", path.display());
+            return ExitCode::from(2);
+        }
+        return if fired_any { ExitCode::from(1) } else { ExitCode::SUCCESS };
+    }
+
+    let out = a.out.clone().unwrap_or_else(|| home.join(".local/state/glassbox/captures"));
+    let baseline = glassbox::persist::collect(home, &a.repos);
+    let mut follower = match Follower::at_end(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("cannot follow {}: {e}", path.display());
+            return ExitCode::from(2);
+        }
+    };
+    println!(
+        "glassbox watch: watching {} (loop {}, spike {}, failures {}); captures in {}",
+        visible(&path.display().to_string()),
+        t.repeats,
+        t.spike,
+        t.failures,
+        visible(&out.display().to_string())
+    );
+    let _ = std::io::stdout().flush();
+    let ctx = Context { transcript: &path, home, repos: &a.repos, pid: a.pid, baseline: Some(&baseline) };
+    loop {
+        match follower.new_lines() {
+            Ok(lines) => {
+                for line in lines {
+                    for trigger in detector.feed(&line) {
+                        handle(trigger, &ctx, Some(&out));
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("stopped following {}: {e}", path.display());
+                return ExitCode::from(2);
+            }
+        }
+        if a.pid.is_some_and(|pid| !watch::alive(pid)) {
+            println!("glassbox watch: process {} has exited", a.pid.unwrap_or_default());
+            return ExitCode::SUCCESS;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
 }

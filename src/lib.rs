@@ -4,3 +4,4 @@ pub mod persist;
 pub mod reach;
 pub mod safe;
 pub mod sha256;
+pub mod watch;

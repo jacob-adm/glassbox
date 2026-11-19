@@ -7,7 +7,7 @@ macOS, the privacy grants (such as Full Disk Access) of the app it was launched 
 that reach before you start the agent, and reports how much of each local AI model is already in
 memory, and shows what an agent session set up to run again later. It is a single Rust binary with no dependencies.
 
-Status: 0.1.0, the first release. Three commands: `reach`, `models` and `persist`.
+Status: 0.1.0, the first release, with `reach`, `models` and `persist`. `watch` is new since 0.1.0.
 
 ## Install
 
@@ -50,6 +50,12 @@ units, autostart entries, cron, shell startup files, SSH and git configuration, 
 startup files, and AI agent configurations (Claude Code, Cursor, Codex, Gemini). Save a snapshot
 before an agent session and compare after it to see what was added or changed.
 
+`glassbox watch` follows a local agent session transcript (Claude Code by default). When the agent
+repeats an identical tool call, produces an unusually long turn, or keeps failing tool calls, it
+writes a capture: the trigger, the persistence points added or changed since watching began, the
+repository's uncommitted changes and the agent's process tree. It can pause the agent so you can look
+before it continues. Transcripts are read for structure only; their content is never copied.
+
 ## Commands
 
 | Command | What it does |
@@ -64,6 +70,9 @@ before an agent session and compare after it to see what was added or changed.
 | `glassbox persist` | List persistence points |
 | `glassbox persist --save FILE` | Save a snapshot of them |
 | `glassbox persist --since FILE --strict` | Report what was added, changed or removed; exit 1 if anything was added or changed |
+| `glassbox watch` | Follow the newest local agent session and capture the machine's state on a trigger |
+| `glassbox watch --pid PID --pause` | Also stop the agent process when a trigger fires |
+| `glassbox watch TRANSCRIPT --once` | Scan a whole transcript; exit 1 if any trigger fires |
 | `glassbox persist --repo DIR` | Also watch a repository's git hooks, git config and agent configs |
 
 See [Commands](docs/commands.md) for the full output, exit status and location list.

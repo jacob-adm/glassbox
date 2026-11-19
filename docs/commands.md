@@ -200,6 +200,16 @@ SHA-256 of each. Save a snapshot before an agent session and compare with it aft
 sections are hashed, at any depth and with keys sorted. Usage counters and key order do not register
 as changes. If the file is not valid JSON, the whole file is hashed.
 
+### Repositories
+
+- Points under a `--repo` are labelled `<repo>/…` (`<repo2>/…` for the second), so pass the `--repo`
+  options in the same order to `--save` and `--since`.
+- Hooks are read from the directory git uses: `core.hooksPath` from `/etc/gitconfig`, `~/.config/git/config`,
+  `~/.gitconfig`, the repository's config and, when `extensions.worktreeConfig` is on, `config.worktree`
+  (later ones win; `~` is expanded). Files pulled in with `include.path` are not read.
+- In a linked worktree, the shared hooks and config of the main repository are watched.
+- A repository's local, untracked Claude instruction file is not watched.
+
 ### Results
 
 | Change | Meaning | Fails `--strict` |
@@ -233,7 +243,7 @@ Without `--since`, `--json` prints `{"items":[{"category":…,"path":…,"sha256
 |---|---|
 | 0 | Listed, saved, or compared. With `--strict`, also: nothing added or changed |
 | 1 | `--since --strict` and something was added or changed |
-| 2 | Usage error, or the snapshot cannot be read or written |
+| 2 | Usage error, or the snapshot cannot be read or written (including a snapshot saved by a different glassbox version: save a new one) |
 
 ### Limits
 

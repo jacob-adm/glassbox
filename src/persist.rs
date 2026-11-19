@@ -45,14 +45,17 @@ const AGENT_FILES: &[&str] = &[
 ];
 /// Files rewritten with usage data on every run: only these keys can make something run.
 const AGENT_KEYED: &[(&str, &[&str])] = &[(".claude.json", &["mcpServers", "hooks"])];
-const REPO_AGENT_FILES: &[&str] = &[".mcp.json", ".claude/settings.json", ".cursor/mcp.json", ".vscode/mcp.json"];
+const REPO_AGENT_FILES: &[&str] =
+    &[".mcp.json", ".claude/settings.json", ".claude/settings.local.json", ".cursor/mcp.json", ".vscode/mcp.json"];
 /// Instructions agents load at the start of every session: changing them steers every later run.
 const INSTRUCTION_FILES: &[&str] = &[".claude/CLAUDE.md", ".codex/AGENTS.md", ".gemini/GEMINI.md"];
 const INSTRUCTION_DIRS: &[&str] = &[".claude/skills", ".claude/agents", ".claude/commands"];
 const REPO_INSTRUCTION_FILES: &[&str] = &[
-    "CLAUDE.md", "AGENTS.md", "GEMINI.md", ".cursorrules", ".windsurfrules",
+    "CLAUDE.md", ".claude/CLAUDE.md", "AGENTS.md", "GEMINI.md", ".cursorrules", ".windsurfrules",
     ".github/copilot-instructions.md",
 ];
+/// Skill bundles nest scripts several levels below the skill directory.
+const INSTRUCTION_DEPTH: usize = 6;
 const REPO_INSTRUCTION_DIRS: &[&str] = &[".claude/skills", ".claude/agents", ".claude/commands", ".cursor/rules"];
 
 #[cfg(target_os = "macos")]
@@ -96,7 +99,7 @@ pub fn collect(home: &Path, repos: &[PathBuf]) -> Vec<Item> {
         c.file("agent instructions", &home.join(rel));
     }
     for rel in INSTRUCTION_DIRS {
-        c.dir("agent instructions", &home.join(rel), 3);
+        c.dir("agent instructions", &home.join(rel), INSTRUCTION_DEPTH);
     }
     for (rel, keys) in AGENT_KEYED {
         c.json_keys("agent config", &home.join(rel), keys);
@@ -122,12 +125,9 @@ pub fn collect(home: &Path, repos: &[PathBuf]) -> Vec<Item> {
         let (git_dir, common_dir) = git_dirs(repo);
         c.file_in("git config", &common_dir.join("config"), Some((&common_dir, &git_tag)));
         c.file_in("git config", &git_dir.join("config.worktree"), Some((&git_dir, &git_tag)));
-        match hooks_path(&[common_dir.join("config"), git_dir.join("config.worktree")]) {
-            Some(p) => {
-                let dir = if Path::new(&p).is_absolute() { PathBuf::from(&p) } else { repo.join(&p) };
-                let hooks_tag = format!("{tag}/{p}");
-                c.dir_in("git hook", &dir, 1, Some((&dir, &hooks_tag)));
-            }
+        match hooks_path(home, repo, &common_dir, &git_dir) {
+            // Inside the repository: <repo>/...; elsewhere: its own path (absolute or ~/...).
+            Some(dir) => c.dir_in("git hook", &dir, 1, Some((repo, &tag))),
             None => c.dir_in("git hook", &common_dir.join("hooks"), 1, Some((&common_dir, &git_tag))),
         }
         for rel in REPO_AGENT_FILES {
@@ -137,7 +137,7 @@ pub fn collect(home: &Path, repos: &[PathBuf]) -> Vec<Item> {
             c.file_in("agent instructions", &repo.join(rel), Some((repo, &tag)));
         }
         for rel in REPO_INSTRUCTION_DIRS {
-            c.dir_in("agent instructions", &repo.join(rel), 3, Some((repo, &tag)));
+            c.dir_in("agent instructions", &repo.join(rel), INSTRUCTION_DEPTH, Some((repo, &tag)));
         }
     }
     c.items.into_values().collect()
@@ -185,6 +185,11 @@ impl Collector<'_> {
             let p = entry.path();
             match fs::symlink_metadata(&p) {
                 Ok(m) if m.is_dir() && depth > 0 => self.dir_in(category, &p, depth - 1, root),
+                // A symlinked directory (for example a skill linked from a plugin checkout) is
+                // walked too, so edits inside it are seen; depth bounds any link loop.
+                Ok(m) if m.file_type().is_symlink() && depth > 0 && fs::metadata(&p).is_ok_and(|t| t.is_dir()) => {
+                    self.dir_in(category, &p, depth - 1, root)
+                }
                 Ok(m) if !m.is_dir() => self.file_in(category, &p, root),
                 _ => {}
             }
@@ -248,45 +253,6 @@ const SPARSE_MIN: u64 = 1 << 20;
 
 /// SHA-256 of a whole regular file. FIFOs, devices and sockets are never opened for
 /// reading; they are identified by type (and a symlink by its target) instead.
-/// (git dir, common dir) of a working tree. In a linked worktree `.git` is a file naming
-/// its own git dir, and hooks and the main config live in the common dir it points to.
-fn git_dirs(repo: &Path) -> (PathBuf, PathBuf) {
-    let dot_git = repo.join(".git");
-    let pointer = fs::symlink_metadata(&dot_git).is_ok_and(|m| m.is_file());
-    let read = |p: &Path| safe::read_capped(p, 4096).ok().map(|(b, _)| String::from_utf8_lossy(&b).trim().to_string());
-    let Some(git_dir) = pointer
-        .then(|| read(&dot_git))
-        .flatten()
-        .and_then(|t| t.strip_prefix("gitdir:").map(|g| repo.join(g.trim())))
-    else {
-        return (dot_git.clone(), dot_git);
-    };
-    let common = read(&git_dir.join("commondir")).map(|c| git_dir.join(c)).unwrap_or_else(|| git_dir.clone());
-    (git_dir, common)
-}
-
-/// `core.hooksPath` from git config files (later files win), if set.
-fn hooks_path(configs: &[PathBuf]) -> Option<String> {
-    let mut found = None;
-    for config in configs {
-        let Ok((raw, _)) = safe::read_capped(config, 1 << 20) else { continue };
-        let mut section = String::new();
-        for line in String::from_utf8_lossy(&raw).lines() {
-            let line = line.trim();
-            if let Some(rest) = line.strip_prefix('[') {
-                section = rest.split([']', ' ', '"']).next().unwrap_or("").to_ascii_lowercase();
-            } else if section == "core" {
-                if let Some((key, value)) = line.split_once('=') {
-                    if key.trim().eq_ignore_ascii_case("hookspath") {
-                        found = Some(value.trim().trim_matches('"').to_string());
-                    }
-                }
-            }
-        }
-    }
-    found.filter(|p| !p.is_empty())
-}
-
 fn content_hash(path: &Path) -> String {
     use std::os::unix::fs::MetadataExt;
     if let Ok(mut file) = safe::open_regular(path) {
@@ -336,6 +302,80 @@ fn content_hash(path: &Path) -> String {
     }
 }
 
+/// (git dir, common dir) of a working tree. In a linked worktree `.git` is a file naming
+/// its own git dir, and hooks and the main config live in the common dir it points to.
+fn git_dirs(repo: &Path) -> (PathBuf, PathBuf) {
+    let dot_git = repo.join(".git");
+    let pointer = fs::symlink_metadata(&dot_git).is_ok_and(|m| m.is_file());
+    let read = |p: &Path| safe::read_capped(p, 4096).ok().map(|(b, _)| String::from_utf8_lossy(&b).trim().to_string());
+    let Some(git_dir) = pointer
+        .then(|| read(&dot_git))
+        .flatten()
+        .and_then(|t| t.strip_prefix("gitdir:").map(|g| repo.join(g.trim())))
+    else {
+        return (dot_git.clone(), dot_git);
+    };
+    let common = read(&git_dir.join("commondir")).map(|c| git_dir.join(c)).unwrap_or_else(|| git_dir.clone());
+    (git_dir, common)
+}
+
+/// The hooks directory git uses, if `core.hooksPath` moves it: system, global, repository and
+/// (when `extensions.worktreeConfig` is on) worktree configuration, later ones winning.
+fn hooks_path(home: &Path, repo: &Path, common_dir: &Path, git_dir: &Path) -> Option<PathBuf> {
+    let read = |p: &Path| safe::read_capped(p, 1 << 20).ok().map(|(b, _)| String::from_utf8_lossy(&b).into_owned());
+    let repo_config = read(&common_dir.join("config")).unwrap_or_default();
+    let mut configs = vec![
+        read(Path::new("/etc/gitconfig")),
+        read(&home.join(".config/git/config")),
+        read(&home.join(".gitconfig")),
+        Some(repo_config.clone()),
+    ];
+    if config_value(&repo_config, "extensions", "worktreeconfig").is_some_and(|v| v.eq_ignore_ascii_case("true")) {
+        configs.push(read(&git_dir.join("config.worktree")));
+    }
+    let value = configs.iter().flatten().rev().find_map(|text| config_value(text, "core", "hookspath"))?;
+    if value.is_empty() {
+        return None;
+    }
+    Some(match value.strip_prefix("~/") {
+        Some(rest) => home.join(rest),
+        None if value == "~" => home.to_path_buf(),
+        None if Path::new(&value).is_absolute() => PathBuf::from(value),
+        None => repo.join(value),
+    })
+}
+
+/// Last value of `section.key` (names compared case-insensitively) in git config text,
+/// with quotes removed and `#`/`;` comments outside quotes dropped.
+fn config_value(text: &str, section: &str, key: &str) -> Option<String> {
+    let mut current = String::new();
+    let mut found = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix('[') {
+            current = rest.split([']', ' ', '"']).next().unwrap_or("").to_ascii_lowercase();
+            continue;
+        }
+        if current != section {
+            continue;
+        }
+        let Some((k, v)) = line.split_once('=') else { continue };
+        if !k.trim().eq_ignore_ascii_case(key) {
+            continue;
+        }
+        let (mut value, mut quoted) = (String::new(), false);
+        for ch in v.trim().chars() {
+            match ch {
+                '"' => quoted = !quoted,
+                '#' | ';' if !quoted => break,
+                c => value.push(c),
+            }
+        }
+        found = Some(value.trim().to_string());
+    }
+    found
+}
+
 pub fn diff(before: &[Item], after: &[Item]) -> Vec<(Change, Item)> {
     let old: BTreeMap<&str, &Item> = before.iter().map(|i| (i.path.as_str(), i)).collect();
     let new: BTreeMap<&str, &Item> = after.iter().map(|i| (i.path.as_str(), i)).collect();
@@ -356,7 +396,8 @@ pub fn diff(before: &[Item], after: &[Item]) -> Vec<(Change, Item)> {
     out
 }
 
-const HEADER: &str = "# glassbox persist v1";
+/// v2: repository points are labelled <repo>/..., and agent instructions are watched.
+const HEADER: &str = "# glassbox persist v2";
 const SNAPSHOT_CAP: u64 = 256 << 20;
 
 pub fn save(items: &[Item], file: &Path) -> io::Result<()> {
@@ -388,7 +429,11 @@ pub fn load(file: &Path) -> io::Result<Vec<Item>> {
     let text = String::from_utf8(raw).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "snapshot is not UTF-8"))?;
     // A trailing \r is a line-ending artefact (CRLF): paths store \r escaped as \\r.
     let mut lines = text.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).filter(|l| !l.is_empty());
-    if lines.next() != Some(HEADER) {
+    let header = lines.next();
+    if header.is_some_and(|h| h.starts_with("# glassbox persist v") && h != HEADER) {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot was written by another glassbox version; save a new one"));
+    }
+    if header != Some(HEADER) {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "not a glassbox persist snapshot"));
     }
     lines

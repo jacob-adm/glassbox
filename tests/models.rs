@@ -147,3 +147,12 @@ fn cli_json_lists_models_with_residency() {
     let json = String::from_utf8(out.stdout).unwrap();
     assert!(json.contains("\"name\":\"tiny:1b\",\"source\":\"ollama\",\"bytes\":3145728,\"resident\":"), "{json}");
 }
+
+#[test]
+fn data_ranges_sharing_a_page_are_counted_once() {
+    // 4 KiB pieces at 0, 8 KiB and 60 KiB on 16 KiB pages: the first two share page 0.
+    let ranges = [(0, 4096), (8192, 12288), (61440, 65536)];
+    assert_eq!(glassbox::models::page_ranges(&ranges, 16384), vec![(0, 16384), (49152, 65536)]);
+    assert_eq!(glassbox::models::page_ranges(&ranges, 4096), vec![(0, 4096), (8192, 12288), (61440, 65536)]);
+    assert_eq!(glassbox::models::page_ranges(&[(100, 200), (300, 400)], 4096), vec![(0, 4096)]);
+}

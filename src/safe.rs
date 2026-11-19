@@ -16,9 +16,7 @@ const FLAGS: i32 = 0x0004 /* O_NONBLOCK */ | 0x20000 /* O_NOCTTY */;
     target_os = "linux",
     any(
         target_arch = "x86_64",
-        target_arch = "x86",
         target_arch = "aarch64",
-        target_arch = "arm",
         target_arch = "riscv64",
         target_arch = "loongarch64",
         target_arch = "powerpc64",
@@ -32,9 +30,7 @@ const FLAGS: i32 = 0o4000 /* O_NONBLOCK */ | 0o400 /* O_NOCTTY */;
         target_os = "linux",
         any(
             target_arch = "x86_64",
-            target_arch = "x86",
             target_arch = "aarch64",
-            target_arch = "arm",
             target_arch = "riscv64",
             target_arch = "loongarch64",
             target_arch = "powerpc64",
@@ -43,6 +39,9 @@ const FLAGS: i32 = 0o4000 /* O_NONBLOCK */ | 0o400 /* O_NOCTTY */;
     )
 )))]
 compile_error!("O_NONBLOCK and O_NOCTTY values are not known for this target; add them to src/safe.rs");
+// The FFI declarations (mmap, lseek) pass offsets as 64-bit integers.
+#[cfg(not(target_pointer_width = "64"))]
+compile_error!("glassbox supports 64-bit targets only");
 
 /// Open `path` read-only without blocking or acquiring a terminal, whatever kind of file it is.
 pub fn open_nonblocking(path: &Path) -> io::Result<File> {
@@ -92,8 +91,10 @@ pub fn visible(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\t' => out.push_str("\\t"),
             c if c.is_control() => out.push_str(&format!("\\x{:02x}", c as u32)),
-            '\u{00ad}' | '\u{061c}' | '\u{180e}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}'
-            | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206f}' | '\u{feff}' | '\u{fff9}'..='\u{fffb}' => {
+            '\u{00ad}' | '\u{034f}' | '\u{061c}' | '\u{115f}' | '\u{1160}' | '\u{180e}' | '\u{200b}'..='\u{200f}'
+            | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206f}' | '\u{3164}'
+            | '\u{fe00}'..='\u{fe0f}' | '\u{feff}' | '\u{ffa0}' | '\u{fff9}'..='\u{fffb}'
+            | '\u{e0000}'..='\u{e007f}' | '\u{e0100}'..='\u{e01ef}' => {
                 out.push_str(&format!("\\u{:04x}", c as u32))
             }
             c => out.push(c),

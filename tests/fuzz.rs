@@ -48,8 +48,14 @@ fn persist_survives_a_hostile_claude_json() {
         Command::new(env!("CARGO_BIN_EXE_glassbox")).arg("persist").args(args).arg("--home").arg(&home).output().unwrap()
     };
     assert_eq!(run(&["--save", snap.to_str().unwrap()]).status.code(), Some(0));
-    // Deeper nesting with no mcpServers or hooks is not a change and must not crash.
+    // A subtree past the depth limit could hide a hook, so changing it is reported, without crashing.
     fs::write(home.join(".claude.json"), "[".repeat(200_001) + &"]".repeat(200_001)).unwrap();
+    let out = run(&["--since", snap.to_str().unwrap(), "--strict", "--json"]);
+    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stdout));
+    // Still reported on a second run; restoring the original content is not a change.
+    let out = run(&["--since", snap.to_str().unwrap(), "--strict", "--json"]);
+    assert_eq!(out.status.code(), Some(1));
+    fs::write(home.join(".claude.json"), "[".repeat(200_000) + &"]".repeat(200_000)).unwrap();
     let out = run(&["--since", snap.to_str().unwrap(), "--strict", "--json"]);
     assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
     // A hook added next to the deep subtree is caught.

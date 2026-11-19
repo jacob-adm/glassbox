@@ -40,8 +40,9 @@ const ENXIO: i32 = 6;
 pub fn residency(path: &Path) -> io::Result<Residency> {
     let file = crate::safe::open_regular(path)?;
     let bytes = file.metadata()?.len();
+    let page = unsafe { getpagesize() } as u64;
     let mut resident = 0u64;
-    for (start, end) in data_ranges(&file, bytes) {
+    for (start, end) in page_ranges(&data_ranges(&file, bytes), page) {
         resident += resident_in(&file, start, end)?;
     }
     Ok(Residency { bytes, resident: resident.min(bytes) })
@@ -70,10 +71,24 @@ fn data_ranges(file: &fs::File, bytes: u64) -> Vec<(u64, u64)> {
     ranges
 }
 
-/// Resident bytes in [start, end), mapped in windows so the residency vector stays small.
+/// Data ranges widened to whole pages and merged, so a page shared by two ranges is
+/// measured once.
+pub fn page_ranges(ranges: &[(u64, u64)], page: u64) -> Vec<(u64, u64)> {
+    let mut out: Vec<(u64, u64)> = Vec::new();
+    for &(start, end) in ranges {
+        let (s, e) = (start - start % page, end.div_ceil(page) * page);
+        match out.last_mut() {
+            Some(last) if s <= last.1 => last.1 = last.1.max(e),
+            _ => out.push((s, e)),
+        }
+    }
+    out
+}
+
+/// Resident bytes in the page-aligned range [start, end), mapped in windows so the residency vector stays small.
 fn resident_in(file: &fs::File, start: u64, end: u64) -> io::Result<u64> {
     let page = unsafe { getpagesize() } as u64;
-    let mut offset = start - start % page;
+    let mut offset = start;
     let mut resident = 0u64;
     while offset < end {
         let len = (end - offset).min(WINDOW) as usize;

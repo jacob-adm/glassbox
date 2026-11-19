@@ -199,6 +199,7 @@ const JSON_CAP: u64 = 64 << 20;
 /// Larger files are compared by size and change time rather than read, so a huge sparse
 /// file cannot stall the audit. A normal user cannot set a file's change time (ctime).
 const HASH_LIMIT: u64 = 1 << 30;
+const SPARSE_MIN: u64 = 1 << 20;
 
 /// SHA-256 of a whole regular file. FIFOs, devices and sockets are never opened for
 /// reading; they are identified by type (and a symlink by its target) instead.
@@ -206,7 +207,11 @@ fn content_hash(path: &Path) -> String {
     use std::os::unix::fs::MetadataExt;
     if let Ok(mut file) = safe::open_regular(path) {
         return match file.metadata() {
-            Ok(m) if m.len() > HASH_LIMIT => format!("oversize:{}:{}.{}:{}", m.len(), m.ctime(), m.ctime_nsec(), m.ino()),
+            // Very large, or mostly holes (a real persistence file is neither): compare by
+            // metadata so planted files cannot make the audit read gigabytes.
+            Ok(m) if m.len() > HASH_LIMIT || (m.len() > SPARSE_MIN && m.blocks() * 512 < m.len() / 2) => {
+                format!("oversize:{}:{}.{}:{}", m.len(), m.ctime(), m.ctime_nsec(), m.ino())
+            }
             _ => match safe::hash_file(&mut file) {
                 Ok(digest) => sha256::to_hex(&digest),
                 Err(e) => format!("error:{}", e.kind()),
@@ -214,6 +219,14 @@ fn content_hash(path: &Path) -> String {
         };
     }
     match fs::metadata(path) {
+        // A directory where a file is expected: compare the names it holds.
+        Ok(m) if m.is_dir() => {
+            let mut names: Vec<String> = fs::read_dir(path)
+                .map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+                .unwrap_or_default();
+            names.sort();
+            format!("directory:{}", sha256::hex(names.join("\n").as_bytes()))
+        }
         Ok(m) if !m.is_file() => {
             let t = m.file_type();
             let kind = if t.is_fifo() {
@@ -267,7 +280,19 @@ pub fn save(items: &[Item], file: &Path) -> io::Result<()> {
     for i in items {
         out.push_str(&format!("{}\t{}\t{}\n", i.hash, escape(&i.category), escape(&i.path)));
     }
-    fs::write(file, out)
+    // Write a new file next to the target and rename it into place: a FIFO or symlink
+    // planted at the target is replaced, never opened or written through.
+    let tmp = file.with_file_name(format!(
+        ".{}.{}.tmp",
+        file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        std::process::id()
+    ));
+    let mut f = fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+    std::io::Write::write_all(&mut f, out.as_bytes())?;
+    f.sync_all()?;
+    fs::rename(&tmp, file).inspect_err(|_| {
+        let _ = fs::remove_file(&tmp);
+    })
 }
 
 pub fn load(file: &Path) -> io::Result<Vec<Item>> {
@@ -277,7 +302,8 @@ pub fn load(file: &Path) -> io::Result<Vec<Item>> {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot is too large"));
     }
     let text = String::from_utf8(raw).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "snapshot is not UTF-8"))?;
-    let mut lines = text.split('\n').filter(|l| !l.is_empty());
+    // A trailing \r is a line-ending artefact (CRLF): paths store \r escaped as \\r.
+    let mut lines = text.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).filter(|l| !l.is_empty());
     if lines.next() != Some(HEADER) {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "not a glassbox persist snapshot"));
     }
@@ -286,7 +312,7 @@ pub fn load(file: &Path) -> io::Result<Vec<Item>> {
             let mut f = l.splitn(3, '\t');
             match (f.next(), f.next(), f.next()) {
                 (Some(h), Some(c), Some(p)) => Ok(Item { hash: h.into(), category: unescape(c), path: unescape(p) }),
-                _ => Err(io::Error::new(io::ErrorKind::InvalidData, format!("bad snapshot line: {l}"))),
+                _ => Err(io::Error::new(io::ErrorKind::InvalidData, "bad snapshot line")),
             }
         })
         .collect()

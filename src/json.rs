@@ -47,7 +47,8 @@ impl Value {
         }
     }
 
-    /// Every (path, value) whose key is in `keys`, at any depth, in sorted order.
+    /// Every (path, value) whose key is in `keys`, in sorted order, plus every subtree past
+    /// `MAX_DEPTH` (which may contain such a key).
     pub fn find(&self, keys: &[&str]) -> Vec<(String, &Value)> {
         let mut out = Vec::new();
         self.find_into("$", keys, &mut out);
@@ -70,6 +71,9 @@ impl Value {
                     v.find_into(&format!("{path}[{i}]"), keys, out);
                 }
             }
+            // A subtree past MAX_DEPTH is not searched, so it could hide a selected key:
+            // include it whole. Changes inside it are then always reported.
+            Value::Opaque(_) => out.push((path.to_string(), self)),
             _ => {}
         }
     }

@@ -36,8 +36,8 @@ impl Hasher {
             self.buf.extend_from_slice(&data[..take]);
             data = &data[take..];
             if self.buf.len() == 64 {
-                let block = std::mem::take(&mut self.buf);
-                compress(&mut self.h, &block);
+                compress(&mut self.h, &self.buf);
+                self.buf.clear();
             }
         }
         let mut blocks = data.chunks_exact(64);

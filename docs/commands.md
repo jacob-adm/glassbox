@@ -243,7 +243,12 @@ Without `--since`, `--json` prints `{"items":[{"category":…,"path":…,"sha256
   (ctime, which a normal user cannot set) instead, so a huge file cannot stall the audit.
 - FIFOs, devices and sockets are never read; they are compared by type and symlink target.
 - A file that cannot be read is compared by size and modification time instead of content.
-- In `~/.claude.json`, a section nested more than 256 levels deep is compared as written, so
-  reformatting it or reordering its keys reports a change. This can only add a report, never hide one.
+- In `~/.claude.json`, any part nested more than 256 levels deep is included whole and compared as
+  written, because it could hide a hook. Changing, reformatting or reordering it reports a change.
+  This can only add a report, never hide one.
+- A file larger than 1 MiB that is mostly holes (sparse) is compared by size, inode and change time.
+- A directory where a file is expected is compared by the names it contains.
+- `--save` writes a new file and renames it into place, so a FIFO or symlink at the target is replaced,
+  never written through.
 - An agent that can write to the snapshot file can hide its changes. Keep the snapshot where the agent
   cannot write, for example outside its sandbox or working directory.

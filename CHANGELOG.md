@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0 - 2026-11-19
 
 First version. glassbox audits what AI agents and other local processes can access on macOS and
 Linux, as a single Rust binary with no dependencies.

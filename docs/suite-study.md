@@ -74,7 +74,7 @@ Concept value: **H** high, **M** medium, **L** low, **–** none for agent harne
 | `hex2dec` | Hex/decimal conversion | `printf` | NATIVE | – | – |
 | `junction` | NTFS junctions | `ln -s` | NATIVE | – | – |
 | `ldmdump` | Dynamic-disk database dump | N/A | N/A | – | – |
-| `Listdlls` | Loaded DLLs per process | `vmmap`, `otool -L`, `/proc/PID/maps`, `pldd` | NATIVE | Provenance of loaded code: which plugins and libraries an agent process actually runs | L |
+| `Listdlls` | Loaded DLLs per process | `vmmap`, `otool -L`, `/proc/PID/maps`, `pldd` | NATIVE | Provenance of loaded code: which plugins and libraries an agent process loads | L |
 | `livekd` | Kernel debugging of the running system | Linux `crash` with `/proc/kcore`; macOS KDK | N/A | Observing a live system without stopping it | M |
 | `LoadOrd` | Driver and service load order | `kmutil showloaded`, `systemd-analyze critical-chain`, `lsmod` | NATIVE | Startup ordering, the same problem as hook execution order | L |
 | `LoadOrdC` | Command-line LoadOrder | as above | NATIVE | as above | L |
@@ -130,7 +130,7 @@ Concept value: **H** high, **M** medium, **L** low, **–** none for agent harne
 
 | Rank | Port | Gap it fills | Teaches (Windows Internals) | Inference / harness use | Grounding |
 |---|---|---|---|---|---|
-| 1 | **RAMMap** | "Which files are in RAM, and what is memory actually doing?" Linux `cachestat()` (6.5+) and `mincore`; macOS `mincore` and `host_statistics64` | P1 ch5 memory, P2 ch11 cache | Model-weight residency, cold against warm start | [cachestat(2)](https://man.archlinux.org/man/cachestat.2.en); Kwon et al., *PagedAttention*, SOSP 2023, [doi:10.1145/3600006.3613165](https://doi.org/10.1145/3600006.3613165) |
+| 1 | **RAMMap** | Which files are in RAM, and how memory is allocated. Linux `cachestat()` (6.5+) and `mincore`; macOS `mincore` and `host_statistics64` | P1 ch5 memory, P2 ch11 cache | Model-weight residency, cold against warm start | [cachestat(2)](https://man.archlinux.org/man/cachestat.2.en); Kwon et al., *PagedAttention*, SOSP 2023, [doi:10.1145/3600006.3613165](https://doi.org/10.1145/3600006.3613165) |
 | 2 | **Autoruns** | One view of persistence across BTM, launchd, extensions, systemd, cron, XDG, `ld.so.preload`, shell rc, git hooks; baseline compare | P2 ch12 startup, ch10 services | "What did the agent leave behind?" | [MITRE ATT&CK TA0003](https://attack.mitre.org/tactics/TA0003/); [Elastic Linux persistence primer](https://www.elastic.co/security-labs/primer-on-persistence-mechanisms); prior art [KnockKnock](https://objective-see.com/products/knockknock.html) (macOS only) |
 | 3 | **PsPing** | TCP connect and HTTP time-to-first-byte latency with correct percentiles; open-loop scheduling corrects coordinated omission | P2 ch8 timers | Inference endpoint latency, time to first token | [RFC 2681](https://www.rfc-editor.org/rfc/rfc2681); Reddi et al., *MLPerf Inference*, ISCA 2020, [doi:10.1109/ISCA45697.2020.00045](https://doi.org/10.1109/ISCA45697.2020.00045); [coordinated omission](https://groups.google.com/g/mechanical-sympathy/c/icNZJejUHfE) |
 | 4 | **AccessChk** (+AccessEnum, ShellRunas) | "What can user X read and write, everywhere?" | P1 ch7 security | "What can my agent touch?" | Saltzer & Schroeder, *The Protection of Information in Computer Systems*, Proc. IEEE 1975, [doi:10.1109/PROC.1975.9939](https://doi.org/10.1109/PROC.1975.9939) |

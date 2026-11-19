@@ -1,6 +1,6 @@
 # glassbox
 
-See what your machine, and the AI agents running on it, can actually do.
+glassbox audits what AI agents and other local processes can access on macOS and Linux.
 
 An agent started from your terminal runs as you. It inherits your files, your credentials and, on
 macOS, the privacy grants (such as Full Disk Access) of the app it was launched from. glassbox shows

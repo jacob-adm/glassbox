@@ -100,7 +100,7 @@ Recommended start: **5, then 1, then 2.**
 
 ## 5. Agent reach audit: "what can my agent touch?"
 
-**Question it answers.** Before starting an unsandboxed agent, what can it actually read, write and execute, given the identity it runs as and the permissions it inherits from its parent process?
+**Question it answers.** Before starting an unsandboxed agent, what can it read, write and execute, given the identity it runs as and the permissions it inherits from its parent process?
 
 **Prior art**
 

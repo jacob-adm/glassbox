@@ -14,6 +14,9 @@ permissions:
 
 jobs:
   test:
+    # Hosted runners are not available to this private repository on its current plan,
+    # so the jobs run once it is public. Until then ci/linux.sh and the local hooks gate merges.
+    if: github.event.repository.visibility == 'public'
     strategy:
       fail-fast: false
       matrix:

@@ -27,7 +27,7 @@ pub struct Residency {
 
 /// Size of `path` and how many of its bytes are in the page cache.
 pub fn residency(path: &Path) -> io::Result<Residency> {
-    let file = fs::File::open(path)?;
+    let file = crate::safe::open_regular(path)?;
     let bytes = file.metadata()?.len();
     if bytes == 0 {
         return Ok(Residency { bytes, resident: 0 });
@@ -110,12 +110,14 @@ fn ollama(root: &Path, out: &mut Found) {
         }
         name.extend(path.iter().map(String::as_str).filter(|p| !(host == "registry.ollama.ai" && *p == "library")));
         name.push(model);
-        let Ok(text) = fs::read_to_string(&manifest) else { continue };
+        let Ok((raw, _)) = crate::safe::read_capped(&manifest, 1 << 20) else { continue };
+        let text = String::from_utf8_lossy(&raw);
         let blobs: Vec<PathBuf> = text
             .split('}')
             .filter(|layer| layer.contains("vnd.ollama.image.model") || layer.contains("vnd.ollama.image.projector"))
             .filter_map(|layer| layer.split("\"digest\":\"").nth(1)?.split('"').next().map(str::to_string))
-            .map(|digest| root.join("blobs").join(digest.replacen(':', "-", 1)))
+            .filter_map(|digest| blob_name(&digest))
+            .map(|name| root.join("blobs").join(name))
             .collect();
         out.push(("ollama", format!("{}:{tag}", name.join("/")), blobs));
     }
@@ -140,6 +142,12 @@ fn huggingface(root: &Path, out: &mut Found) {
         walk(&repo.join("snapshots"), 4, &mut files);
         out.push(("huggingface", rest.replace("--", "/"), files.into_iter().filter(|f| is_weight(f)).collect()));
     }
+}
+
+/// `sha256:<64 hex>` to its blob file name; anything else (for example `../`) is refused.
+fn blob_name(digest: &str) -> Option<String> {
+    let hex = digest.strip_prefix("sha256:")?;
+    (hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit())).then(|| format!("sha256-{hex}"))
 }
 
 fn is_weight(path: &Path) -> bool {

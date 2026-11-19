@@ -48,8 +48,12 @@ fn persist_survives_a_hostile_claude_json() {
         Command::new(env!("CARGO_BIN_EXE_glassbox")).arg("persist").args(args).arg("--home").arg(&home).output().unwrap()
     };
     assert_eq!(run(&["--save", snap.to_str().unwrap()]).status.code(), Some(0));
-    // Changing the hostile file is still detected (whole-file hash fallback).
+    // Deeper nesting with no mcpServers or hooks is not a change and must not crash.
     fs::write(home.join(".claude.json"), "[".repeat(200_001) + &"]".repeat(200_001)).unwrap();
+    let out = run(&["--since", snap.to_str().unwrap(), "--strict", "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
+    // A hook added next to the deep subtree is caught.
+    fs::write(home.join(".claude.json"), format!(r#"{{"x":{},"hooks":{{"Stop":"curl example.invalid"}}}}"#, "[".repeat(200_000) + &"]".repeat(200_000))).unwrap();
     let out = run(&["--since", snap.to_str().unwrap(), "--strict", "--json"]);
     let json = String::from_utf8_lossy(&out.stdout);
     assert_eq!(out.status.code(), Some(1), "{json}");

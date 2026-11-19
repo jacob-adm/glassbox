@@ -1,5 +1,12 @@
-//! Minimal JSON reader: enough to pull named subtrees out of agent config files.
+//! Strict JSON reader (RFC 8259): enough to pull named subtrees out of agent config files.
+//!
+//! The files it reads can be written by the agents glassbox audits, so it follows the
+//! grammar exactly (what it accepts is what a real parser would load) and never recurses
+//! without bound: a subtree nested deeper than `MAX_DEPTH` is kept as opaque raw text.
 use std::collections::BTreeMap;
+
+/// Deeper subtrees are stored as `Value::Opaque` instead of being parsed.
+pub const MAX_DEPTH: usize = 256;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -9,10 +16,9 @@ pub enum Value {
     Str(String),
     Arr(Vec<Value>),
     Obj(BTreeMap<String, Value>),
+    /// A subtree beyond `MAX_DEPTH`, as its raw text.
+    Opaque(String),
 }
-
-/// Deeper input is rejected rather than risking stack exhaustion on hostile files.
-pub const MAX_DEPTH: usize = 256;
 
 pub fn parse(text: &str) -> Option<Value> {
     let mut p = Parser { s: text.as_bytes(), i: 0, depth: 0 };
@@ -29,6 +35,7 @@ impl Value {
             Value::Bool(b) => b.to_string(),
             Value::Num(n) => n.clone(),
             Value::Str(s) => quote(s),
+            Value::Opaque(raw) => raw.clone(),
             Value::Arr(a) => format!("[{}]", a.iter().map(Value::canonical).collect::<Vec<_>>().join(",")),
             Value::Obj(o) => format!(
                 "{{{}}}",
@@ -99,24 +106,47 @@ impl Parser<'_> {
     fn value(&mut self) -> Option<Value> {
         self.ws();
         match *self.s.get(self.i)? {
-            b'{' | b'[' if self.depth >= MAX_DEPTH => None,
-            b'{' => {
-                self.depth += 1;
-                let v = self.object();
-                self.depth -= 1;
-                v
-            }
-            b'[' => {
-                self.depth += 1;
-                let v = self.array();
-                self.depth -= 1;
-                v
-            }
+            b'{' | b'[' if self.depth >= MAX_DEPTH => self.opaque(),
+            b'{' => self.nested(Self::object),
+            b'[' => self.nested(Self::array),
             b'"' => self.string().map(Value::Str),
             b't' => self.eat("true").map(|_| Value::Bool(true)),
             b'f' => self.eat("false").map(|_| Value::Bool(false)),
             b'n' => self.eat("null").map(|_| Value::Null),
             _ => self.number(),
+        }
+    }
+
+    fn nested(&mut self, f: fn(&mut Self) -> Option<Value>) -> Option<Value> {
+        self.depth += 1;
+        let v = f(self);
+        self.depth -= 1;
+        v
+    }
+
+    /// Skip a balanced object or array without recursion and keep its raw text.
+    fn opaque(&mut self) -> Option<Value> {
+        let start = self.i;
+        let mut level = 0usize;
+        loop {
+            match *self.s.get(self.i)? {
+                b'{' | b'[' => {
+                    level += 1;
+                    self.i += 1;
+                }
+                b'}' | b']' => {
+                    level -= 1;
+                    self.i += 1;
+                    if level == 0 {
+                        let raw = std::str::from_utf8(&self.s[start..self.i]).ok()?;
+                        return Some(Value::Opaque(raw.to_string()));
+                    }
+                }
+                b'"' => {
+                    self.string()?;
+                }
+                _ => self.i += 1,
+            }
         }
     }
 
@@ -158,43 +188,108 @@ impl Parser<'_> {
         }
     }
 
+    fn hex4(&mut self) -> Option<u32> {
+        let digits = self.s.get(self.i..self.i + 4)?;
+        if !digits.iter().all(u8::is_ascii_hexdigit) {
+            return None;
+        }
+        self.i += 4;
+        u32::from_str_radix(std::str::from_utf8(digits).ok()?, 16).ok()
+    }
+
     fn string(&mut self) -> Option<String> {
         self.eat("\"")?;
-        let mut out = Vec::new();
+        let mut out = String::new();
+        let mut plain = self.i;
         loop {
-            let c = *self.s.get(self.i)?;
-            self.i += 1;
-            match c {
-                b'"' => return String::from_utf8(out).ok(),
+            match *self.s.get(self.i)? {
+                b'"' => {
+                    out.push_str(std::str::from_utf8(&self.s[plain..self.i]).ok()?);
+                    self.i += 1;
+                    return Some(out);
+                }
+                0x00..=0x1f => return None,
                 b'\\' => {
+                    out.push_str(std::str::from_utf8(&self.s[plain..self.i]).ok()?);
+                    self.i += 1;
                     let e = *self.s.get(self.i)?;
                     self.i += 1;
-                    let ch = match e {
-                        b'n' => '\n',
-                        b't' => '\t',
-                        b'r' => '\r',
-                        b'b' => '\u{8}',
-                        b'f' => '\u{c}',
-                        b'u' => {
-                            let hex = std::str::from_utf8(self.s.get(self.i..self.i + 4)?).ok()?;
-                            self.i += 4;
-                            char::from_u32(u32::from_str_radix(hex, 16).ok()?).unwrap_or('\u{fffd}')
-                        }
-                        other => other as char,
-                    };
-                    let mut buf = [0u8; 4];
-                    out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+                    match e {
+                        b'"' => out.push('"'),
+                        b'\\' => out.push('\\'),
+                        b'/' => out.push('/'),
+                        b'b' => out.push('\u{8}'),
+                        b'f' => out.push('\u{c}'),
+                        b'n' => out.push('\n'),
+                        b'r' => out.push('\r'),
+                        b't' => out.push('\t'),
+                        b'u' => self.unicode_escape(&mut out)?,
+                        _ => return None,
+                    }
+                    plain = self.i;
                 }
-                c => out.push(c),
+                _ => self.i += 1,
             }
         }
     }
 
+    /// After `\u`: one code point, combining a surrogate pair. A lone surrogate has no
+    /// `char`, so it is kept as its escape text, which keeps different ones distinct.
+    fn unicode_escape(&mut self, out: &mut String) -> Option<()> {
+        let hi = self.hex4()?;
+        if (0xD800..0xDC00).contains(&hi) && self.s[self.i..].starts_with(b"\\u") {
+            let save = self.i;
+            self.i += 2;
+            let lo = self.hex4()?;
+            if (0xDC00..0xE000).contains(&lo) {
+                out.push(char::from_u32(0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00))?);
+                return Some(());
+            }
+            self.i = save;
+        }
+        match char::from_u32(hi) {
+            Some(ch) => out.push(ch),
+            None => out.push_str(&format!("\\u{hi:04x}")),
+        }
+        Some(())
+    }
+
+    /// `-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?`
     fn number(&mut self) -> Option<Value> {
         let start = self.i;
-        while self.i < self.s.len() && matches!(self.s[self.i], b'-' | b'+' | b'.' | b'e' | b'E' | b'0'..=b'9') {
+        if self.s.get(self.i) == Some(&b'-') {
             self.i += 1;
         }
-        (self.i > start).then(|| Value::Num(String::from_utf8_lossy(&self.s[start..self.i]).into_owned()))
+        match self.s.get(self.i)? {
+            b'0' => self.i += 1,
+            b'1'..=b'9' => {
+                self.digits();
+            }
+            _ => return None,
+        }
+        if self.s.get(self.i) == Some(&b'.') {
+            self.i += 1;
+            if !self.digits() {
+                return None;
+            }
+        }
+        if matches!(self.s.get(self.i), Some(b'e' | b'E')) {
+            self.i += 1;
+            if matches!(self.s.get(self.i), Some(b'+' | b'-')) {
+                self.i += 1;
+            }
+            if !self.digits() {
+                return None;
+            }
+        }
+        Some(Value::Num(String::from_utf8_lossy(&self.s[start..self.i]).into_owned()))
+    }
+
+    fn digits(&mut self) -> bool {
+        let from = self.i;
+        while self.s.get(self.i).is_some_and(u8::is_ascii_digit) {
+            self.i += 1;
+        }
+        self.i > from
     }
 }

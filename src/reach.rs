@@ -43,7 +43,7 @@ pub fn probe(path: &Path) -> Reach {
     let opened = match fs::symlink_metadata(path) {
         Err(e) if e.kind() == ErrorKind::NotFound => return Reach::Absent,
         Ok(m) if m.is_dir() => fs::read_dir(path).map(drop),
-        _ => fs::File::open(path).map(drop),
+        _ => crate::safe::open_nonblocking(path).map(drop),
     };
     match opened {
         Ok(()) => Reach::Readable,

@@ -2,7 +2,8 @@
 //!
 //! Each point is hashed (SHA-256 of its content) so two snapshots can be compared:
 //! a point that appears or whose content changes between them was added or changed.
-use crate::{json, sha256};
+use crate::{json, safe, sha256};
+use std::os::unix::fs::FileTypeExt;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
@@ -146,8 +147,18 @@ impl Collector<'_> {
     }
 
     fn json_keys(&mut self, category: &str, path: &Path, keys: &[&str]) {
-        let Ok(text) = fs::read_to_string(path) else { return };
+        if fs::symlink_metadata(path).is_err() {
+            return;
+        }
         let label = format!("{}#{}", self.show(path), keys.join(","));
+        let Ok((raw, size)) = safe::read_capped(path, JSON_CAP) else {
+            let hash = content_hash(path);
+            return self.add(category, label, hash);
+        };
+        if size > JSON_CAP {
+            return self.add(category, label, format!("large:{size}:{}", sha256::hex(&raw)));
+        }
+        let text = String::from_utf8_lossy(&raw);
         let hash = match json::parse(&text) {
             Some(v) => {
                 let parts: Vec<String> = v.find(keys).iter().map(|(p, v)| format!("{p}={}", v.canonical())).collect();
@@ -185,13 +196,29 @@ impl Collector<'_> {
     }
 }
 
+/// Persistence files are small; past this only the first bytes and the size are hashed.
+const FILE_CAP: u64 = 16 << 20;
+const JSON_CAP: u64 = 64 << 20;
+
+/// SHA-256 of a regular file's content. FIFOs, devices and sockets are never opened for
+/// reading; they are identified by type (and a symlink by its target) instead.
 fn content_hash(path: &Path) -> String {
-    match fs::read(path) {
-        Ok(bytes) => sha256::hex(&bytes),
-        Err(_) => match fs::symlink_metadata(path) {
+    match safe::read_capped(path, FILE_CAP) {
+        Ok((bytes, size)) if size > FILE_CAP => format!("large:{size}:{}", sha256::hex(&bytes)),
+        Ok((bytes, _)) => sha256::hex(&bytes),
+        Err(_) => match fs::metadata(path) {
+            Ok(m) if !m.is_file() => {
+                let t = m.file_type();
+                let kind = if t.is_fifo() { "fifo" } else if t.is_char_device() { "char-device" } else if t.is_block_device() { "block-device" } else if t.is_socket() { "socket" } else { "other" };
+                let target = fs::read_link(path).map(|t| t.display().to_string()).unwrap_or_default();
+                format!("special:{kind}:{}", sha256::hex(target.as_bytes()))
+            }
             // Unreadable: fall back to what metadata can show.
             Ok(m) => format!("unreadable:{}:{:?}", m.len(), m.modified().ok()),
-            Err(e) => format!("error:{}", e.kind()),
+            Err(_) => match fs::read_link(path) {
+                Ok(target) => format!("dangling:{}", sha256::hex(target.to_string_lossy().as_bytes())),
+                Err(e) => format!("error:{}", e.kind()),
+            },
         },
     }
 }
@@ -228,7 +255,7 @@ pub fn save(items: &[Item], file: &Path) -> io::Result<()> {
 
 pub fn load(file: &Path) -> io::Result<Vec<Item>> {
     let text = fs::read_to_string(file)?;
-    let mut lines = text.lines();
+    let mut lines = text.split('\n').filter(|l| !l.is_empty());
     if lines.next() != Some(HEADER) {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "not a glassbox persist snapshot"));
     }
@@ -244,7 +271,7 @@ pub fn load(file: &Path) -> io::Result<Vec<Item>> {
 }
 
 fn escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('\t', "\\t").replace('\n', "\\n")
+    s.replace('\\', "\\\\").replace('\t', "\\t").replace('\n', "\\n").replace('\r', "\\r")
 }
 
 fn unescape(s: &str) -> String {
@@ -255,6 +282,7 @@ fn unescape(s: &str) -> String {
             match chars.next() {
                 Some('t') => out.push('\t'),
                 Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
                 Some(o) => out.push(o),
                 None => out.push('\\'),
             }

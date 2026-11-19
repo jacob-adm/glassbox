@@ -7,12 +7,12 @@ macOS, the privacy grants (such as Full Disk Access) of the app it was launched 
 that reach before you start the agent, and reports how much of each local AI model is already in
 memory, and shows what an agent session set up to run again later. It is a single Rust binary with no dependencies.
 
-Status: 0.1.0, the first release, with `reach`, `models` and `persist`. `watch` is new since 0.1.0.
+Status: 0.2.0. Four commands: `reach`, `models`, `persist` and `watch`.
 
 ## Install
 
 Download the archive for your platform from the
-[0.1.0 release](https://github.com/jacob-adm/glassbox/releases/tag/v0.1.0), check it against
+[latest release](https://github.com/jacob-adm/glassbox/releases/latest), check it against
 `SHA256SUMS`, and put `glassbox` on your `PATH`. Builds: macOS on Apple silicon, Linux x86-64 and
 Linux ARM64 (glibc 2.31 or later).
 

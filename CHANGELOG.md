@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 - 2026-11-19
 
 - `watch`: follows a local agent session transcript (Claude Code JSON lines) and, when the agent
   repeats an identical tool call 4 times in a row, produces more than 16,000 output tokens in a turn,

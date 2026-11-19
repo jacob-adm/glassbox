@@ -8,7 +8,6 @@
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 const EPERM: i32 = 1;
 const EACCES: i32 = 13;
@@ -152,9 +151,24 @@ pub fn parent_chain(pid: u32) -> Vec<(u32, String)> {
     chain
 }
 
-/// (parent pid, command) of `pid`, from ps(1).
+/// (parent pid, command) of `pid`, from /proc. Minimal images often lack ps(1).
+#[cfg(target_os = "linux")]
 fn ps(pid: u32) -> Option<(u32, String)> {
-    let out = Command::new("ps").args(["-o", "ppid=", "-o", "comm=", "-p", &pid.to_string()]).output().ok()?;
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // Format: pid (comm) state ppid ...; comm may itself contain spaces or ')'.
+    let close = stat.rfind(')')?;
+    let comm = &stat[stat.find('(')? + 1..close];
+    let ppid = stat[close + 1..].split_whitespace().nth(1)?.parse().ok()?;
+    let argv0 = fs::read(format!("/proc/{pid}/cmdline")).ok().and_then(|b| {
+        b.split(|c| *c == 0).next().filter(|s| !s.is_empty()).map(|s| String::from_utf8_lossy(s).into_owned())
+    });
+    Some((ppid, argv0.unwrap_or_else(|| comm.to_string())))
+}
+
+/// (parent pid, command) of `pid`, from ps(1).
+#[cfg(not(target_os = "linux"))]
+fn ps(pid: u32) -> Option<(u32, String)> {
+    let out = std::process::Command::new("ps").args(["-o", "ppid=", "-o", "comm=", "-p", &pid.to_string()]).output().ok()?;
     let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
     let (ppid, comm) = line.split_once(char::is_whitespace)?;
     Some((ppid.trim().parse().ok()?, comm.trim().to_string()))

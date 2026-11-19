@@ -2,5 +2,10 @@
 name = "glassbox"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
+description = "Security and systems auditing for AI agents and local workloads on macOS and Linux"
+license = "Apache-2.0"
+repository = "https://github.com/jacob-adm/glassbox"
+readme = "README.md"
 
 [dependencies]

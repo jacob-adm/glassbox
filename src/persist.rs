@@ -151,13 +151,11 @@ impl Collector<'_> {
             return;
         }
         let label = format!("{}#{}", self.show(path), keys.join(","));
-        let Ok((raw, size)) = safe::read_capped(path, JSON_CAP) else {
-            let hash = content_hash(path);
-            return self.add(category, label, hash);
+        // Too large to parse, unreadable or not a regular file: compare the whole file instead.
+        let raw = match safe::read_capped(path, JSON_CAP) {
+            Ok((raw, size)) if size <= JSON_CAP => raw,
+            _ => return self.add(category, label, content_hash(path)),
         };
-        if size > JSON_CAP {
-            return self.add(category, label, format!("large:{size}:{}", sha256::hex(&raw)));
-        }
         let text = String::from_utf8_lossy(&raw);
         let hash = match json::parse(&text) {
             Some(v) => {
@@ -196,29 +194,47 @@ impl Collector<'_> {
     }
 }
 
-/// Persistence files are small; past this only the first bytes and the size are hashed.
-const FILE_CAP: u64 = 16 << 20;
+/// Agent config files are parsed only up to this size; larger ones are compared whole.
 const JSON_CAP: u64 = 64 << 20;
+/// Larger files are compared by size and change time rather than read, so a huge sparse
+/// file cannot stall the audit. A normal user cannot set a file's change time (ctime).
+const HASH_LIMIT: u64 = 1 << 30;
 
-/// SHA-256 of a regular file's content. FIFOs, devices and sockets are never opened for
+/// SHA-256 of a whole regular file. FIFOs, devices and sockets are never opened for
 /// reading; they are identified by type (and a symlink by its target) instead.
 fn content_hash(path: &Path) -> String {
-    match safe::read_capped(path, FILE_CAP) {
-        Ok((bytes, size)) if size > FILE_CAP => format!("large:{size}:{}", sha256::hex(&bytes)),
-        Ok((bytes, _)) => sha256::hex(&bytes),
-        Err(_) => match fs::metadata(path) {
-            Ok(m) if !m.is_file() => {
-                let t = m.file_type();
-                let kind = if t.is_fifo() { "fifo" } else if t.is_char_device() { "char-device" } else if t.is_block_device() { "block-device" } else if t.is_socket() { "socket" } else { "other" };
-                let target = fs::read_link(path).map(|t| t.display().to_string()).unwrap_or_default();
-                format!("special:{kind}:{}", sha256::hex(target.as_bytes()))
-            }
-            // Unreadable: fall back to what metadata can show.
-            Ok(m) => format!("unreadable:{}:{:?}", m.len(), m.modified().ok()),
-            Err(_) => match fs::read_link(path) {
-                Ok(target) => format!("dangling:{}", sha256::hex(target.to_string_lossy().as_bytes())),
+    use std::os::unix::fs::MetadataExt;
+    if let Ok(mut file) = safe::open_regular(path) {
+        return match file.metadata() {
+            Ok(m) if m.len() > HASH_LIMIT => format!("oversize:{}:{}.{}:{}", m.len(), m.ctime(), m.ctime_nsec(), m.ino()),
+            _ => match safe::hash_file(&mut file) {
+                Ok(digest) => sha256::to_hex(&digest),
                 Err(e) => format!("error:{}", e.kind()),
             },
+        };
+    }
+    match fs::metadata(path) {
+        Ok(m) if !m.is_file() => {
+            let t = m.file_type();
+            let kind = if t.is_fifo() {
+                "fifo"
+            } else if t.is_char_device() {
+                "char-device"
+            } else if t.is_block_device() {
+                "block-device"
+            } else if t.is_socket() {
+                "socket"
+            } else {
+                "other"
+            };
+            let target = fs::read_link(path).map(|t| t.display().to_string()).unwrap_or_default();
+            format!("special:{kind}:{}", sha256::hex(target.as_bytes()))
+        }
+        // Unreadable: fall back to what metadata can show.
+        Ok(m) => format!("unreadable:{}:{:?}", m.len(), m.modified().ok()),
+        Err(_) => match fs::read_link(path) {
+            Ok(target) => format!("dangling:{}", sha256::hex(target.to_string_lossy().as_bytes())),
+            Err(e) => format!("error:{}", e.kind()),
         },
     }
 }
@@ -244,6 +260,7 @@ pub fn diff(before: &[Item], after: &[Item]) -> Vec<(Change, Item)> {
 }
 
 const HEADER: &str = "# glassbox persist v1";
+const SNAPSHOT_CAP: u64 = 256 << 20;
 
 pub fn save(items: &[Item], file: &Path) -> io::Result<()> {
     let mut out = format!("{HEADER}\n");
@@ -254,7 +271,12 @@ pub fn save(items: &[Item], file: &Path) -> io::Result<()> {
 }
 
 pub fn load(file: &Path) -> io::Result<Vec<Item>> {
-    let text = fs::read_to_string(file)?;
+    // The snapshot may sit where the audited agent can write: read it like any other planted file.
+    let (raw, size) = safe::read_capped(file, SNAPSHOT_CAP)?;
+    if size > SNAPSHOT_CAP {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot is too large"));
+    }
+    let text = String::from_utf8(raw).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "snapshot is not UTF-8"))?;
     let mut lines = text.split('\n').filter(|l| !l.is_empty());
     if lines.next() != Some(HEADER) {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "not a glassbox persist snapshot"));

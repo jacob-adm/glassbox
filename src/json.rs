@@ -13,6 +13,9 @@ pub enum Value {
     Null,
     Bool(bool),
     Num(String),
+    /// The string in canonical escaped form (without the quotes): `"`, `\\` and control
+    /// characters escaped, a lone surrogate as `\uXXXX`. Everything else is literal, so two
+    /// strings are equal exactly when their decoded contents are.
     Str(String),
     Arr(Vec<Value>),
     Obj(BTreeMap<String, Value>),
@@ -34,12 +37,12 @@ impl Value {
             Value::Null => "null".into(),
             Value::Bool(b) => b.to_string(),
             Value::Num(n) => n.clone(),
-            Value::Str(s) => quote(s),
+            Value::Str(s) => format!("\"{s}\""),
             Value::Opaque(raw) => raw.clone(),
             Value::Arr(a) => format!("[{}]", a.iter().map(Value::canonical).collect::<Vec<_>>().join(",")),
             Value::Obj(o) => format!(
                 "{{{}}}",
-                o.iter().map(|(k, v)| format!("{}:{}", quote(k), v.canonical())).collect::<Vec<_>>().join(",")
+                o.iter().map(|(k, v)| format!("\"{k}\":{}", v.canonical())).collect::<Vec<_>>().join(",")
             ),
         }
     }
@@ -55,7 +58,7 @@ impl Value {
         match self {
             Value::Obj(o) => {
                 for (k, v) in o {
-                    let p = format!("{path}.{}", quote(k));
+                    let p = format!("{path}.\"{k}\"");
                     if keys.contains(&k.as_str()) {
                         out.push((p.clone(), v));
                     }
@@ -70,20 +73,6 @@ impl Value {
             _ => {}
         }
     }
-}
-
-fn quote(s: &str) -> String {
-    let mut out = String::from("\"");
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
 }
 
 struct Parser<'a> {
@@ -124,28 +113,88 @@ impl Parser<'_> {
         v
     }
 
-    /// Skip a balanced object or array without recursion and keep its raw text.
+    /// Check a too-deep object or array against the grammar with an explicit stack (no
+    /// recursion) and keep its raw text. Key order and spacing inside it are not normalized.
     fn opaque(&mut self) -> Option<Value> {
+        #[derive(PartialEq)]
+        enum Next {
+            Value,
+            ValueOrClose,
+            Key,
+            KeyOrClose,
+            Colon,
+            CommaOrClose,
+        }
         let start = self.i;
-        let mut level = 0usize;
+        let mut stack: Vec<u8> = Vec::new();
+        let mut next = Next::Value;
         loop {
-            match *self.s.get(self.i)? {
-                b'{' | b'[' => {
-                    level += 1;
+            self.ws();
+            let c = *self.s.get(self.i)?;
+            let mut closed = false;
+            match next {
+                Next::ValueOrClose if c == b']' => {
                     self.i += 1;
+                    stack.pop();
+                    closed = true;
                 }
-                b'}' | b']' => {
-                    level -= 1;
+                Next::Value | Next::ValueOrClose => match c {
+                    b'[' => {
+                        self.i += 1;
+                        stack.push(b'[');
+                        next = Next::ValueOrClose;
+                    }
+                    b'{' => {
+                        self.i += 1;
+                        stack.push(b'{');
+                        next = Next::KeyOrClose;
+                    }
+                    b'"' => {
+                        self.string()?;
+                        closed = true;
+                    }
+                    b't' | b'f' | b'n' => {
+                        self.eat("true").or_else(|| self.eat("false")).or_else(|| self.eat("null"))?;
+                        closed = true;
+                    }
+                    _ => {
+                        self.number()?;
+                        closed = true;
+                    }
+                },
+                Next::KeyOrClose if c == b'}' => {
                     self.i += 1;
-                    if level == 0 {
-                        let raw = std::str::from_utf8(&self.s[start..self.i]).ok()?;
-                        return Some(Value::Opaque(raw.to_string()));
+                    stack.pop();
+                    closed = true;
+                }
+                Next::Key | Next::KeyOrClose => {
+                    self.string()?;
+                    next = Next::Colon;
+                }
+                Next::Colon => {
+                    self.eat(":")?;
+                    next = Next::Value;
+                }
+                Next::CommaOrClose => {
+                    let top = *stack.last()?;
+                    self.i += 1;
+                    match (c, top) {
+                        (b',', b'[') => next = Next::Value,
+                        (b',', b'{') => next = Next::Key,
+                        (b']', b'[') | (b'}', b'{') => {
+                            stack.pop();
+                            closed = true;
+                        }
+                        _ => return None,
                     }
                 }
-                b'"' => {
-                    self.string()?;
+            }
+            if closed {
+                if stack.is_empty() {
+                    let raw = std::str::from_utf8(&self.s[start..self.i]).ok()?;
+                    return Some(Value::Opaque(raw.to_string()));
                 }
-                _ => self.i += 1,
+                next = Next::CommaOrClose;
             }
         }
     }
@@ -197,6 +246,7 @@ impl Parser<'_> {
         u32::from_str_radix(std::str::from_utf8(digits).ok()?, 16).ok()
     }
 
+    /// A string, returned in canonical escaped form (see `Value::Str`).
     fn string(&mut self) -> Option<String> {
         self.eat("\"")?;
         let mut out = String::new();
@@ -215,14 +265,14 @@ impl Parser<'_> {
                     let e = *self.s.get(self.i)?;
                     self.i += 1;
                     match e {
-                        b'"' => out.push('"'),
-                        b'\\' => out.push('\\'),
+                        b'"' => out.push_str("\\\""),
+                        b'\\' => out.push_str("\\\\"),
                         b'/' => out.push('/'),
-                        b'b' => out.push('\u{8}'),
-                        b'f' => out.push('\u{c}'),
-                        b'n' => out.push('\n'),
-                        b'r' => out.push('\r'),
-                        b't' => out.push('\t'),
+                        b'b' => out.push_str("\\u0008"),
+                        b'f' => out.push_str("\\u000c"),
+                        b'n' => out.push_str("\\u000a"),
+                        b'r' => out.push_str("\\u000d"),
+                        b't' => out.push_str("\\u0009"),
                         b'u' => self.unicode_escape(&mut out)?,
                         _ => return None,
                     }
@@ -233,8 +283,9 @@ impl Parser<'_> {
         }
     }
 
-    /// After `\u`: one code point, combining a surrogate pair. A lone surrogate has no
-    /// `char`, so it is kept as its escape text, which keeps different ones distinct.
+    /// After `\u`: one code point in canonical form. A surrogate pair is combined; a lone
+    /// surrogate (no `char`) stays `\uXXXX`, which cannot collide with literal text because
+    /// a literal backslash is always written `\\\\`.
     fn unicode_escape(&mut self, out: &mut String) -> Option<()> {
         let hi = self.hex4()?;
         if (0xD800..0xDC00).contains(&hi) && self.s[self.i..].starts_with(b"\\u") {
@@ -248,6 +299,9 @@ impl Parser<'_> {
             self.i = save;
         }
         match char::from_u32(hi) {
+            Some('"') => out.push_str("\\\""),
+            Some('\\') => out.push_str("\\\\"),
+            Some(ch) if (ch as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", ch as u32)),
             Some(ch) => out.push(ch),
             None => out.push_str(&format!("\\u{hi:04x}")),
         }

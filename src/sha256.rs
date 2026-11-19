@@ -11,46 +11,96 @@ const K: [u32; 64] = [
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ];
 
+/// Incremental SHA-256, so files of any size are hashed in full without being held in memory.
+pub struct Hasher {
+    h: [u32; 8],
+    buf: Vec<u8>,
+    len: u64,
+}
+
+impl Default for Hasher {
+    fn default() -> Self {
+        Hasher {
+            h: [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19],
+            buf: Vec::with_capacity(64),
+            len: 0,
+        }
+    }
+}
+
+impl Hasher {
+    pub fn update(&mut self, mut data: &[u8]) {
+        self.len += data.len() as u64;
+        if !self.buf.is_empty() {
+            let take = (64 - self.buf.len()).min(data.len());
+            self.buf.extend_from_slice(&data[..take]);
+            data = &data[take..];
+            if self.buf.len() == 64 {
+                let block = std::mem::take(&mut self.buf);
+                compress(&mut self.h, &block);
+            }
+        }
+        let mut blocks = data.chunks_exact(64);
+        for block in &mut blocks {
+            compress(&mut self.h, block);
+        }
+        self.buf.extend_from_slice(blocks.remainder());
+    }
+
+    pub fn finish(mut self) -> [u8; 32] {
+        let bits = self.len * 8;
+        let mut tail = std::mem::take(&mut self.buf);
+        tail.push(0x80);
+        while tail.len() % 64 != 56 {
+            tail.push(0);
+        }
+        tail.extend_from_slice(&bits.to_be_bytes());
+        for block in tail.chunks_exact(64) {
+            compress(&mut self.h, block);
+        }
+        let mut out = [0u8; 32];
+        for (chunk, word) in out.chunks_exact_mut(4).zip(self.h) {
+            chunk.copy_from_slice(&word.to_be_bytes());
+        }
+        out
+    }
+}
+
+fn compress(h: &mut [u32; 8], block: &[u8]) {
+    let mut w = [0u32; 64];
+    for (i, word) in block.chunks_exact(4).enumerate() {
+        w[i] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
+    }
+    for i in 16..64 {
+        let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+        let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+        w[i] = w[i - 16].wrapping_add(s0).wrapping_add(w[i - 7]).wrapping_add(s1);
+    }
+    let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh] = *h;
+    for i in 0..64 {
+        let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+        let ch = (e & f) ^ (!e & g);
+        let t1 = hh.wrapping_add(s1).wrapping_add(ch).wrapping_add(K[i]).wrapping_add(w[i]);
+        let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+        let maj = (a & b) ^ (a & c) ^ (b & c);
+        let t2 = s0.wrapping_add(maj);
+        (hh, g, f, e, d, c, b, a) = (g, f, e, d.wrapping_add(t1), c, b, a, t1.wrapping_add(t2));
+    }
+    for (x, y) in h.iter_mut().zip([a, b, c, d, e, f, g, hh]) {
+        *x = x.wrapping_add(y);
+    }
+}
+
 pub fn digest(data: &[u8]) -> [u8; 32] {
-    let mut h: [u32; 8] =
-        [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
-    let mut msg = data.to_vec();
-    msg.push(0x80);
-    while msg.len() % 64 != 56 {
-        msg.push(0);
-    }
-    msg.extend_from_slice(&((data.len() as u64) * 8).to_be_bytes());
-    for block in msg.chunks_exact(64) {
-        let mut w = [0u32; 64];
-        for (i, word) in block.chunks_exact(4).enumerate() {
-            w[i] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
-        }
-        for i in 16..64 {
-            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
-            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
-            w[i] = w[i - 16].wrapping_add(s0).wrapping_add(w[i - 7]).wrapping_add(s1);
-        }
-        let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh] = h;
-        for i in 0..64 {
-            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
-            let ch = (e & f) ^ (!e & g);
-            let t1 = hh.wrapping_add(s1).wrapping_add(ch).wrapping_add(K[i]).wrapping_add(w[i]);
-            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
-            let maj = (a & b) ^ (a & c) ^ (b & c);
-            let t2 = s0.wrapping_add(maj);
-            (hh, g, f, e, d, c, b, a) = (g, f, e, d.wrapping_add(t1), c, b, a, t1.wrapping_add(t2));
-        }
-        for (x, y) in h.iter_mut().zip([a, b, c, d, e, f, g, hh]) {
-            *x = x.wrapping_add(y);
-        }
-    }
-    let mut out = [0u8; 32];
-    for (chunk, word) in out.chunks_exact_mut(4).zip(h) {
-        chunk.copy_from_slice(&word.to_be_bytes());
-    }
-    out
+    let mut hasher = Hasher::default();
+    hasher.update(data);
+    hasher.finish()
+}
+
+pub fn to_hex(bytes: &[u8; 32]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 pub fn hex(data: &[u8]) -> String {
-    digest(data).iter().map(|b| format!("{b:02x}")).collect()
+    to_hex(&digest(data))
 }

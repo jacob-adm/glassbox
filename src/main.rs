@@ -1,8 +1,8 @@
-use porthole::reach::{self, Finding, Reach};
+use glassbox::reach::{self, Finding, Reach};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: porthole reach [--json] [--strict] [--home DIR]
+const USAGE: &str = "usage: glassbox reach [--json] [--strict] [--home DIR]
 
 Reports what a process started like this one (for example an agent launched
 from this terminal) could read. Opens each location read-only; never reads

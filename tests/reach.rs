@@ -1,12 +1,12 @@
 //! Reach audit tests against real files and processes. No mocks.
-use porthole::reach::{parent_chain, probe, Reach};
+use glassbox::reach::{parent_chain, probe, Reach};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
 
 fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("porthole-test-{}-{name}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("glassbox-test-{}-{name}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir
@@ -59,7 +59,7 @@ fn parent_chain_starts_with_our_parent() {
 }
 
 fn run(home: &PathBuf, strict: bool) -> (i32, String) {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_porthole"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_glassbox"));
     cmd.args(["reach", "--json", "--home"]).arg(home);
     if strict {
         cmd.arg("--strict");

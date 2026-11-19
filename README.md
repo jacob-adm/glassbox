@@ -1,16 +1,16 @@
-# porthole
+# glassbox
 
 macOS and Linux tools for seeing what your machine, and the AI agents running on it, can actually do.
 
-## `porthole reach`: what can my agent touch?
+## `glassbox reach`: what can my agent touch?
 
-An agent started from your terminal runs as you and inherits your terminal's access, including, on macOS, the privacy grants (Full Disk Access and similar) of the app it was launched from. `porthole reach` reports what a process started that way can read, before you start the agent.
+An agent started from your terminal runs as you and inherits your terminal's access, including, on macOS, the privacy grants (Full Disk Access and similar) of the app it was launched from. `glassbox reach` reports what a process started that way can read, before you start the agent.
 
 ```
 cargo build --release
-./target/release/porthole reach            # human-readable report
-./target/release/porthole reach --json     # for scripts and agent harnesses
-./target/release/porthole reach --strict   # exit 1 if any sensitive location is readable
+./target/release/glassbox reach            # human-readable report
+./target/release/glassbox reach --json     # for scripts and agent harnesses
+./target/release/glassbox reach --strict   # exit 1 if any sensitive location is readable
 ```
 
 Each result is one of:

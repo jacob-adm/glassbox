@@ -92,3 +92,66 @@ Paths are relative to the home directory. Sensitive locations count towards `--s
   runs inside the same sandbox. Run it there to check the policy.
 - On Linux, confinement by AppArmor, SELinux or Landlock shows up only as a refused open; glassbox
   does not read the policy.
+
+## `glassbox models`
+
+```
+glassbox models [--json] [--home DIR] [--dir DIR]...
+```
+
+Lists local model weight files and how many bytes of each are in the operating system's page cache.
+A model in the page cache loads from memory; a model that is not loads from disk.
+
+| Option | Effect |
+|---|---|
+| `--json` | Print JSON instead of the table |
+| `--home DIR` | Look for model stores under `DIR` instead of `$HOME` |
+| `--dir DIR` | Also search `DIR` (four levels deep) for `.gguf` and `.safetensors` files; repeatable |
+
+### Where it looks
+
+| Source | Location under the home directory | Model name |
+|---|---|---|
+| `ollama` | `.ollama/models/manifests/…` → `blobs/` (layers of type `image.model` and `image.projector`) | `model:tag`, with namespace and registry when not the default |
+| `lmstudio` | `.lmstudio/models/<publisher>/<model>/`, `.cache/lm-studio/models/…` | `publisher/model` |
+| `huggingface` | `.cache/huggingface/hub/models--<org>--<name>/snapshots/` | `org/name` |
+| `dir` | each `--dir` | file name |
+
+A file reached twice (for example by two snapshots, or a symlink from one tool to another) is counted
+once, under the first model that claims it. Sharded models are summed across their shards.
+
+### How it measures
+
+Each file is mapped read-only and the kernel reports, page by page, which pages are resident
+(`mincore`). No page is touched, so measuring does not load the file. Results can change between
+measurement and use as the kernel evicts or loads pages.
+
+### Text output
+
+```
+MODEL                                               SOURCE            SIZE  IN MEMORY
+lmstudio-community/gemma-3-270m-it-MLX-8bit         lmstudio       442 MiB    442 MiB  100%
+gpt-oss:20b                                         ollama        12.8 GiB      0 MiB    0%
+
+2 model(s), 13.2 GiB on disk, 442 MiB in the page cache.
+```
+
+Models are sorted by bytes in memory, then name.
+
+### JSON output
+
+```json
+{"models":[{"name":"gpt-oss:20b","source":"ollama","bytes":13793422816,"resident":0,
+  "files":["/Users/me/.ollama/models/blobs/sha256-…"]}]}
+```
+
+### Exit status
+
+0 when the list is printed (including when no models are found); 2 for a usage error.
+
+### Limits
+
+- Page cache only. A model already loaded by a running server (Ollama, LM Studio, llama.cpp) may hold
+  its weights in GPU or other anonymous memory, which is not counted. Use the server's own status
+  (for example `ollama ps`) for that.
+- Only `.gguf` and `.safetensors` files are counted; PyTorch `.bin` checkpoints are not.

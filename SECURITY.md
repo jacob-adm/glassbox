@@ -12,6 +12,9 @@ directory that may hold credentials and private data, to find out whether they *
 - **Reports paths, not contents.** Output contains the location (as `~/...`), its category and the
   result. On macOS, opening a privacy-protected location may itself be recorded by the system, as any
   open would be.
+- **`models` maps, never reads.** Model files are mapped read-only and unmapped without touching a
+  page, so measuring neither reads model data nor loads it into memory. Ollama manifests are the only
+  files whose contents are read, to find each model's weight file.
 - **Runs nothing from the paths it probes.** On macOS it runs `ps` (from `PATH`) to read the process
   chain; on Linux it reads `/proc`. Arguments are passed directly, never through a shell.
 - **Escapes what it prints.** Command names from the process chain are escaped in JSON output.

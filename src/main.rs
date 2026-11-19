@@ -51,11 +51,19 @@ fn main() -> ExitCode {
         match (arg.as_str(), command) {
             ("--json", _) => a.json = true,
             ("--strict", Some("reach" | "persist")) => a.strict = true,
-            ("--home", _) => a.home = it.next().map(PathBuf::from),
-            ("--dir", Some("models")) => a.dirs.extend(it.next().map(PathBuf::from)),
-            ("--repo", Some("persist")) => a.repos.extend(it.next().map(PathBuf::from)),
-            ("--save", Some("persist")) => a.save = it.next().map(PathBuf::from),
-            ("--since", Some("persist")) => a.since = it.next().map(PathBuf::from),
+            ("--home", _) | ("--dir", Some("models")) | ("--repo", Some("persist")) | ("--save" | "--since", Some("persist")) => {
+                let Some(value) = it.next().map(PathBuf::from) else {
+                    eprintln!("{arg} needs a value\n{USAGE}");
+                    return ExitCode::from(2);
+                };
+                match arg.as_str() {
+                    "--home" => a.home = Some(value),
+                    "--dir" => a.dirs.push(value),
+                    "--repo" => a.repos.push(value),
+                    "--save" => a.save = Some(value),
+                    _ => a.since = Some(value),
+                }
+            }
             _ => {
                 eprintln!("unknown argument: {arg}\n{USAGE}");
                 return ExitCode::from(2);

@@ -11,8 +11,11 @@ pub enum Value {
     Obj(BTreeMap<String, Value>),
 }
 
+/// Deeper input is rejected rather than risking stack exhaustion on hostile files.
+pub const MAX_DEPTH: usize = 256;
+
 pub fn parse(text: &str) -> Option<Value> {
-    let mut p = Parser { s: text.as_bytes(), i: 0 };
+    let mut p = Parser { s: text.as_bytes(), i: 0, depth: 0 };
     let v = p.value()?;
     p.ws();
     (p.i == p.s.len()).then_some(v)
@@ -79,6 +82,7 @@ fn quote(s: &str) -> String {
 struct Parser<'a> {
     s: &'a [u8],
     i: usize,
+    depth: usize,
 }
 
 impl Parser<'_> {
@@ -95,8 +99,19 @@ impl Parser<'_> {
     fn value(&mut self) -> Option<Value> {
         self.ws();
         match *self.s.get(self.i)? {
-            b'{' => self.object(),
-            b'[' => self.array(),
+            b'{' | b'[' if self.depth >= MAX_DEPTH => None,
+            b'{' => {
+                self.depth += 1;
+                let v = self.object();
+                self.depth -= 1;
+                v
+            }
+            b'[' => {
+                self.depth += 1;
+                let v = self.array();
+                self.depth -= 1;
+                v
+            }
             b'"' => self.string().map(Value::Str),
             b't' => self.eat("true").map(|_| Value::Bool(true)),
             b'f' => self.eat("false").map(|_| Value::Bool(false)),

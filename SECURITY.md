@@ -15,7 +15,10 @@ directory that may hold credentials and private data, to find out whether they *
 - **`models` maps, never reads.** Model files are mapped read-only and unmapped without touching a
   page, so measuring neither reads model data nor loads it into memory. Ollama manifests are the only
   files whose contents are read, to find each model's weight file.
-- **Runs nothing from the paths it probes.** On macOS it runs `ps` (from `PATH`) to read the process
+- **`persist` hashes, never prints.** Persistence files are read to compute a SHA-256 of each; output
+  and snapshots contain paths, categories and hashes only, never file contents. For `~/.claude.json`
+  only the `mcpServers` and `hooks` sections are hashed.
+- **Runs nothing from the paths it probes.** `persist` runs `crontab -l` to read your own crontab; on macOS `reach` runs `ps` (from `PATH`) to read the process
   chain; on Linux it reads `/proc`. Arguments are passed directly, never through a shell.
 - **Escapes what it prints.** Command names from the process chain are escaped in JSON output.
 

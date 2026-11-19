@@ -2,5 +2,10 @@
 name = "glassbox"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
+description = "See what your machine, and the AI agents running on it, can actually do (macOS and Linux)"
+license = "Apache-2.0"
+repository = "https://github.com/jacob-adm/glassbox"
+readme = "README.md"
 
 [dependencies]

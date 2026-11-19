@@ -44,7 +44,7 @@ glassbox checks that condition before the build and checks afterwards that the t
 behind.
 
 ```
-$ glassbox reach --strict                        # on this Mac
+$ glassbox reach --strict                        # on a workstation
 (exit 1)                                         # credentials readable: not disposable
 $ glassbox reach --strict                        # in a container: --network none, unprivileged user
 0 sensitive location(s) readable (marked !); 23 not present.
@@ -80,9 +80,9 @@ glassbox persist --since before-build.snapshot --strict
   the base fails. Pass the toolchain location in `test_cmd`:
   `["/usr/bin/env", "RUSTUP_HOME=/Users/me/.rustup", "CARGO_HOME=/Users/me/.cargo", "/Users/me/.cargo/bin/cargo", "test", "--locked"]`.
 
-## A harness installer: what it adds to a repository
+## An agent tool installer: what it adds to a repository
 
-An agent harness installer that enrols a repository (it writes git hooks, agent instruction files and
+An agent tool installer that enrols a repository (it writes git hooks, agent instruction files and
 a git config key) was run on an empty repository between a snapshot and a comparison:
 
 ```

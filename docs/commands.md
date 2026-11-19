@@ -40,10 +40,10 @@ A symlink is followed, as an agent's open would follow it, so the result is for 
 
 ```
 Process chain (nearest first):
-    40732  /bin/zsh
-    92812  /Applications/iTerm.app/Contents/MacOS/iTerm2
+     2011  /bin/zsh
+      812  /System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal
         1  /sbin/launchd
-Privacy grants on macOS follow the responsible app: iTerm.app
+Privacy grants on macOS follow the responsible app: Terminal.app
 
 ! readable             credentials       ~/.ssh
 ! readable             private data      ~/Library/Mail
@@ -57,8 +57,8 @@ Absent locations are counted but not listed.
 ### JSON output
 
 ```json
-{"chain":[{"pid":40732,"command":"/bin/zsh"}],
- "responsible_app":"iTerm.app",
+{"chain":[{"pid":2011,"command":"/bin/zsh"}],
+ "responsible_app":"Terminal.app",
  "findings":[{"category":"credentials","sensitive":true,"path":"~/.ssh","reach":"readable"}]}
 ```
 

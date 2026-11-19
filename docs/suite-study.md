@@ -4,7 +4,7 @@ Scope: every tool in the current Sysinternals Suite (79 programs, one row per to
 
 1. **Reverse engineering.** May we reverse engineer it, and if not, what lawful source do we learn from instead?
 2. **macOS/Linux port.** Is there a real gap on macOS or Linux that a port would fill?
-3. **Agent harness / inference.** Is the *concept* behind the tool useful for building agent harnesses or running inference, even when the tool itself is not worth porting?
+3. **Agent tooling / inference.** Is the *concept* behind the tool useful for building agent tooling or running inference, even when the tool itself is not worth porting?
 
 The audience test comes from a developer question: someone with ten years of managed-runtime experience who wants to understand the operating system without reading the whole of *Windows Internals*. A port or concept earns a place only if it gives that person real insight they cannot already get from a built-in command.
 
@@ -40,9 +40,9 @@ Port verdicts:
 - **LOW**: a gap exists, but only third-party tools fill it, or the value is small.
 - **DROP**: a port would mislead on modern hardware.
 
-Concept value: **H** high, **M** medium, **L** low, **–** none for agent harnesses or inference.
+Concept value: **H** high, **M** medium, **L** low, **–** none for agent tooling or inference.
 
-| Tool | What it does | macOS / Linux today | Port | Agent harness / inference concept | Concept |
+| Tool | What it does | macOS / Linux today | Port | Agent tooling / inference concept | Concept |
 |---|---|---|---|---|---|
 | `accesschk` | Effective rights of a user or group on files, keys, services | `ls -le`, `getfacl`, `namei -l`; nothing answers "what can user X write, everywhere" | **PORT** | *What can my agent touch?* Least-privilege audit of the identity an agent runs as | H |
 | `AccessEnum` | Finds permission inconsistencies across a tree | `find -perm`, `getfacl -R` | LOW (fold into accesschk port) | Same audit, tree-wide | M |
@@ -80,7 +80,7 @@ Concept value: **H** high, **M** medium, **L** low, **–** none for agent harne
 | `LoadOrdC` | Command-line LoadOrder | as above | NATIVE | as above | L |
 | `logonsessions` | Active logon sessions | `who`, `last`, `loginctl` | NATIVE | Session inventory, like a registry of running agent sessions | L |
 | `movefile` | Schedules a file move or delete for next boot | N/A | N/A | Staged actions applied only at a gate: plan, then approve, then apply | M |
-| `notmyfault` | Deliberately crashes, hangs or leaks via a driver | Linux `/proc/sysrq-trigger`; macOS none | N/A | Fault injection to prove recovery works: chaos testing for the harness itself | H |
+| `notmyfault` | Deliberately crashes, hangs or leaks via a driver | Linux `/proc/sysrq-trigger`; macOS none | N/A | Fault injection to prove recovery works: chaos testing for the agent tooling itself | H |
 | `notmyfaultc` | Command-line NotMyFault | as above | N/A | as above | H |
 | `ntfsinfo` | NTFS volume internals | N/A | N/A | – | – |
 | `pendmoves` | Lists scheduled boot-time moves | N/A | N/A | Shows what is staged and waiting for the gate (pairs with movefile) | M |
@@ -128,21 +128,21 @@ Concept value: **H** high, **M** medium, **L** low, **–** none for agent harne
 
 ### Track A: macOS/Linux ports (clean-room)
 
-| Rank | Port | Gap it fills | Teaches (Windows Internals) | Inference / harness use | Grounding |
+| Rank | Port | Gap it fills | Teaches (Windows Internals) | Inference / agent-tooling use | Grounding |
 |---|---|---|---|---|---|
 | 1 | **RAMMap** | Which files are in RAM, and how memory is allocated. Linux `cachestat()` (6.5+) and `mincore`; macOS `mincore` and `host_statistics64` | P1 ch5 memory, P2 ch11 cache | Model-weight residency, cold against warm start | [cachestat(2)](https://man.archlinux.org/man/cachestat.2.en); Kwon et al., *PagedAttention*, SOSP 2023, [doi:10.1145/3600006.3613165](https://doi.org/10.1145/3600006.3613165) |
 | 2 | **Autoruns** | One view of persistence across BTM, launchd, extensions, systemd, cron, XDG, `ld.so.preload`, shell rc, git hooks; baseline compare | P2 ch12 startup, ch10 services | "What did the agent leave behind?" | [MITRE ATT&CK TA0003](https://attack.mitre.org/tactics/TA0003/); [Elastic Linux persistence primer](https://www.elastic.co/security-labs/primer-on-persistence-mechanisms); prior art [KnockKnock](https://objective-see.com/products/knockknock.html) (macOS only) |
 | 3 | **PsPing** | TCP connect and HTTP time-to-first-byte latency with correct percentiles; open-loop scheduling corrects coordinated omission | P2 ch8 timers | Inference endpoint latency, time to first token | [RFC 2681](https://www.rfc-editor.org/rfc/rfc2681); Reddi et al., *MLPerf Inference*, ISCA 2020, [doi:10.1109/ISCA45697.2020.00045](https://doi.org/10.1109/ISCA45697.2020.00045); [coordinated omission](https://groups.google.com/g/mechanical-sympathy/c/icNZJejUHfE) |
 | 4 | **AccessChk** (+AccessEnum, ShellRunas) | "What can user X read and write, everywhere?" | P1 ch7 security | "What can my agent touch?" | Saltzer & Schroeder, *The Protection of Information in Computer Systems*, Proc. IEEE 1975, [doi:10.1109/PROC.1975.9939](https://doi.org/10.1109/PROC.1975.9939) |
 
-### Track B: agent harness concepts (become harness features, not ports)
+### Track B: agent tooling concepts (become features, not ports)
 
 | Concept | From | What it becomes |
 |---|---|---|
 | Persistence baseline and diff | Autoruns, ADExplorer snapshots | Snapshot persistence points before an agent run, diff after, fail the run on unexplained additions |
 | Action trace with a stable schema | Procmon, Sysmon (MIT source) | An event schema for agent tool calls, file writes, process spawns and network egress |
 | Trigger-conditioned capture | ProcDump (MIT source) | Capture transcript and state when a trigger fires: token spike, loop, repeated failure |
-| Fault injection | NotMyFault | Deliberately break the harness (kill the model call, corrupt a tool result) to prove recovery. Basiri et al., *Chaos Engineering*, IEEE Software 2016, [doi:10.1109/MS.2016.60](https://doi.org/10.1109/MS.2016.60) |
+| Fault injection | NotMyFault | Deliberately break the agent tooling (kill the model call, corrupt a tool result) to prove recovery. Basiri et al., *Chaos Engineering*, IEEE Software 2016, [doi:10.1109/MS.2016.60](https://doi.org/10.1109/MS.2016.60) |
 | Hidden-content scanner | RegDelNull, Streams | Detect content invisible to humans but read by models: Unicode tag characters, zero-width text, hidden HTML. Greshake et al., *Not What You've Signed Up For*, AISec 2023, [doi:10.1145/3605764.3623985](https://doi.org/10.1145/3605764.3623985); [Unicode tag smuggling](https://embracethered.com/blog/posts/2024/hiding-and-finding-text-with-unicode-tags/) |
 | Provenance check | Sigcheck | Hash and signature check for skills, plugins and model weights before load |
 | Staged actions | MoveFile, PendMoves | Changes queued and listed, applied only after approval |
@@ -170,9 +170,9 @@ Concept value: **H** high, **M** medium, **L** low, **–** none for agent harne
 ## 4. Starting list
 
 1. **RAMMap** port. It has the clearest value for the developer question, serves inference directly, and has no built-in equivalent.
-2. **Autoruns** port with baseline compare. It doubles as the first harness feature, "what did the agent leave behind?"
+2. **Autoruns** port with baseline compare. It doubles as the first agent-tooling feature, "what did the agent leave behind?"
 3. **PsPing** port with open-loop latency. It doubles as the inference latency tool.
-4. **Hidden-content scanner** (Track B). New code with no port needed, and it is the strongest harness concept.
-5. **AccessChk** port, then the remaining Track B concepts as harness features.
+4. **Hidden-content scanner** (Track B). New code with no port needed, and it is the strongest agent-tooling concept.
+5. **AccessChk** port, then the remaining Track B concepts as agent-tooling features.
 
 Every item starts from lawful sources only (section 1) and has a failing test against real OS state before its implementation.

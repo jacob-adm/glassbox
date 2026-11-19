@@ -19,7 +19,7 @@ cargo install --path .
 
 ## Requirements
 
-- macOS or Linux.
+- macOS, or Linux on a 64-bit x86-64, ARM64, RISC-V, LoongArch, POWER or s390x machine.
 - Rust 1.85 or later to build.
 - Nothing else at run time. On macOS the process chain comes from `ps`; on Linux, from `/proc`.
 

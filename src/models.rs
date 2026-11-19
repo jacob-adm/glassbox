@@ -14,7 +14,12 @@ unsafe extern "C" {
     fn munmap(addr: *mut c_void, len: usize) -> i32;
     fn mincore(addr: *mut c_void, len: usize, vec: *mut u8) -> i32;
     fn getpagesize() -> i32;
+    fn lseek(fd: i32, offset: i64, whence: i32) -> i64;
 }
+#[cfg(target_os = "macos")]
+const SEEK_DATA_HOLE: (i32, i32) = (4, 3);
+#[cfg(not(target_os = "macos"))]
+const SEEK_DATA_HOLE: (i32, i32) = (3, 4);
 const PROT_READ: i32 = 1;
 const MAP_SHARED: i32 = 1;
 const WEIGHT_EXTENSIONS: &[&str] = &["gguf", "safetensors"];
@@ -25,29 +30,84 @@ pub struct Residency {
     pub resident: u64,
 }
 
-/// Size of `path` and how many of its bytes are in the page cache.
+/// Bytes mapped per mincore call, so the residency vector stays small for any file size.
+const WINDOW: u64 = 1 << 30;
+const ENXIO: i32 = 6;
+
+/// Size of `path` and how many of its bytes are in the page cache. Only ranges that hold
+/// data are measured (holes in a sparse file are skipped), so the work follows the data
+/// actually on disk, not the size a file claims.
 pub fn residency(path: &Path) -> io::Result<Residency> {
-    let file = fs::File::open(path)?;
+    let file = crate::safe::open_regular(path)?;
     let bytes = file.metadata()?.len();
-    if bytes == 0 {
-        return Ok(Residency { bytes, resident: 0 });
+    let page = unsafe { getpagesize() } as u64;
+    let mut resident = 0u64;
+    for (start, end) in page_ranges(&data_ranges(&file, bytes), page) {
+        resident += resident_in(&file, start, end)?;
     }
-    let len = usize::try_from(bytes).map_err(|_| io::Error::other("file larger than address space"))?;
-    let page = unsafe { getpagesize() } as usize;
-    // SAFETY: read-only shared mapping of an open file; unmapped before return; never dereferenced.
-    let addr = unsafe { mmap(std::ptr::null_mut(), len, PROT_READ, MAP_SHARED, file.as_raw_fd(), 0) };
-    if addr as isize == -1 {
-        return Err(io::Error::last_os_error());
+    Ok(Residency { bytes, resident: resident.min(bytes) })
+}
+
+/// Data ranges of the file from SEEK_DATA/SEEK_HOLE; the whole file if unsupported.
+fn data_ranges(file: &fs::File, bytes: u64) -> Vec<(u64, u64)> {
+    let (seek_data, seek_hole) = SEEK_DATA_HOLE;
+    let fd = file.as_raw_fd();
+    let mut ranges = Vec::new();
+    let mut offset = 0i64;
+    while (offset as u64) < bytes {
+        let data = unsafe { lseek(fd, offset, seek_data) };
+        if data < 0 {
+            // ENXIO: no data past offset. Anything else: SEEK_DATA unsupported here.
+            if io::Error::last_os_error().raw_os_error() != Some(ENXIO) && ranges.is_empty() {
+                return vec![(0, bytes)];
+            }
+            break;
+        }
+        let hole = unsafe { lseek(fd, data, seek_hole) };
+        let end = if hole < 0 { bytes } else { (hole as u64).min(bytes) };
+        ranges.push((data as u64, end));
+        offset = end as i64;
     }
-    let mut vec = vec![0u8; len.div_ceil(page)];
-    let rc = unsafe { mincore(addr, len, vec.as_mut_ptr()) };
-    let err = io::Error::last_os_error();
-    unsafe { munmap(addr, len) };
-    if rc != 0 {
-        return Err(err);
+    ranges
+}
+
+/// Data ranges widened to whole pages and merged, so a page shared by two ranges is
+/// measured once.
+pub fn page_ranges(ranges: &[(u64, u64)], page: u64) -> Vec<(u64, u64)> {
+    let mut out: Vec<(u64, u64)> = Vec::new();
+    for &(start, end) in ranges {
+        let (s, e) = (start - start % page, end.div_ceil(page) * page);
+        match out.last_mut() {
+            Some(last) if s <= last.1 => last.1 = last.1.max(e),
+            _ => out.push((s, e)),
+        }
     }
-    let pages = vec.iter().filter(|v| **v & 1 == 1).count() as u64;
-    Ok(Residency { bytes, resident: (pages * page as u64).min(bytes) })
+    out
+}
+
+/// Resident bytes in the page-aligned range [start, end), mapped in windows so the residency vector stays small.
+fn resident_in(file: &fs::File, start: u64, end: u64) -> io::Result<u64> {
+    let page = unsafe { getpagesize() } as u64;
+    let mut offset = start;
+    let mut resident = 0u64;
+    while offset < end {
+        let len = (end - offset).min(WINDOW) as usize;
+        // SAFETY: read-only shared mapping of an open file; unmapped before the next window; never dereferenced.
+        let addr = unsafe { mmap(std::ptr::null_mut(), len, PROT_READ, MAP_SHARED, file.as_raw_fd(), offset as i64) };
+        if addr as isize == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut vec = vec![0u8; len.div_ceil(page as usize)];
+        let rc = unsafe { mincore(addr, len, vec.as_mut_ptr()) };
+        let err = io::Error::last_os_error();
+        unsafe { munmap(addr, len) };
+        if rc != 0 {
+            return Err(err);
+        }
+        resident += vec.iter().filter(|v| **v & 1 == 1).count() as u64 * page;
+        offset += len as u64;
+    }
+    Ok(resident)
 }
 
 #[derive(Debug)]
@@ -110,12 +170,14 @@ fn ollama(root: &Path, out: &mut Found) {
         }
         name.extend(path.iter().map(String::as_str).filter(|p| !(host == "registry.ollama.ai" && *p == "library")));
         name.push(model);
-        let Ok(text) = fs::read_to_string(&manifest) else { continue };
+        let Ok((raw, _)) = crate::safe::read_capped(&manifest, 1 << 20) else { continue };
+        let text = String::from_utf8_lossy(&raw);
         let blobs: Vec<PathBuf> = text
             .split('}')
             .filter(|layer| layer.contains("vnd.ollama.image.model") || layer.contains("vnd.ollama.image.projector"))
             .filter_map(|layer| layer.split("\"digest\":\"").nth(1)?.split('"').next().map(str::to_string))
-            .map(|digest| root.join("blobs").join(digest.replacen(':', "-", 1)))
+            .filter_map(|digest| blob_name(&digest))
+            .map(|name| root.join("blobs").join(name))
             .collect();
         out.push(("ollama", format!("{}:{tag}", name.join("/")), blobs));
     }
@@ -140,6 +202,12 @@ fn huggingface(root: &Path, out: &mut Found) {
         walk(&repo.join("snapshots"), 4, &mut files);
         out.push(("huggingface", rest.replace("--", "/"), files.into_iter().filter(|f| is_weight(f)).collect()));
     }
+}
+
+/// `sha256:<64 hex>` to its blob file name; anything else (for example `../`) is refused.
+fn blob_name(digest: &str) -> Option<String> {
+    let hex = digest.strip_prefix("sha256:")?;
+    (hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit())).then(|| format!("sha256-{hex}"))
 }
 
 fn is_weight(path: &Path) -> bool {

@@ -2,7 +2,8 @@
 //!
 //! Each point is hashed (SHA-256 of its content) so two snapshots can be compared:
 //! a point that appears or whose content changes between them was added or changed.
-use crate::{json, sha256};
+use crate::{json, safe, sha256};
+use std::os::unix::fs::FileTypeExt;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
@@ -146,8 +147,16 @@ impl Collector<'_> {
     }
 
     fn json_keys(&mut self, category: &str, path: &Path, keys: &[&str]) {
-        let Ok(text) = fs::read_to_string(path) else { return };
+        if fs::symlink_metadata(path).is_err() {
+            return;
+        }
         let label = format!("{}#{}", self.show(path), keys.join(","));
+        // Too large to parse, unreadable or not a regular file: compare the whole file instead.
+        let raw = match safe::read_capped(path, JSON_CAP) {
+            Ok((raw, size)) if size <= JSON_CAP => raw,
+            _ => return self.add(category, label, content_hash(path)),
+        };
+        let text = String::from_utf8_lossy(&raw);
         let hash = match json::parse(&text) {
             Some(v) => {
                 let parts: Vec<String> = v.find(keys).iter().map(|(p, v)| format!("{p}={}", v.canonical())).collect();
@@ -185,12 +194,59 @@ impl Collector<'_> {
     }
 }
 
+/// Agent config files are parsed only up to this size; larger ones are compared whole.
+const JSON_CAP: u64 = 64 << 20;
+/// Larger files are compared by size and change time rather than read, so a huge sparse
+/// file cannot stall the audit. A normal user cannot set a file's change time (ctime).
+const HASH_LIMIT: u64 = 1 << 30;
+const SPARSE_MIN: u64 = 1 << 20;
+
+/// SHA-256 of a whole regular file. FIFOs, devices and sockets are never opened for
+/// reading; they are identified by type (and a symlink by its target) instead.
 fn content_hash(path: &Path) -> String {
-    match fs::read(path) {
-        Ok(bytes) => sha256::hex(&bytes),
-        Err(_) => match fs::symlink_metadata(path) {
-            // Unreadable: fall back to what metadata can show.
-            Ok(m) => format!("unreadable:{}:{:?}", m.len(), m.modified().ok()),
+    use std::os::unix::fs::MetadataExt;
+    if let Ok(mut file) = safe::open_regular(path) {
+        return match file.metadata() {
+            // Very large, or mostly holes (a real persistence file is neither): compare by
+            // metadata so planted files cannot make the audit read gigabytes.
+            Ok(m) if m.len() > HASH_LIMIT || (m.len() > SPARSE_MIN && m.blocks() * 512 < m.len() / 2) => {
+                format!("oversize:{}:{}.{}:{}", m.len(), m.ctime(), m.ctime_nsec(), m.ino())
+            }
+            _ => match safe::hash_file(&mut file) {
+                Ok(digest) => sha256::to_hex(&digest),
+                Err(e) => format!("error:{}", e.kind()),
+            },
+        };
+    }
+    match fs::metadata(path) {
+        // A directory where a file is expected: compare the names it holds.
+        Ok(m) if m.is_dir() => {
+            let mut names: Vec<String> = fs::read_dir(path)
+                .map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+                .unwrap_or_default();
+            names.sort();
+            format!("directory:{}", sha256::hex(names.join("\n").as_bytes()))
+        }
+        Ok(m) if !m.is_file() => {
+            let t = m.file_type();
+            let kind = if t.is_fifo() {
+                "fifo"
+            } else if t.is_char_device() {
+                "char-device"
+            } else if t.is_block_device() {
+                "block-device"
+            } else if t.is_socket() {
+                "socket"
+            } else {
+                "other"
+            };
+            let target = fs::read_link(path).map(|t| t.display().to_string()).unwrap_or_default();
+            format!("special:{kind}:{}", sha256::hex(target.as_bytes()))
+        }
+        // Unreadable: fall back to what metadata can show.
+        Ok(m) => format!("unreadable:{}:{:?}", m.len(), m.modified().ok()),
+        Err(_) => match fs::read_link(path) {
+            Ok(target) => format!("dangling:{}", sha256::hex(target.to_string_lossy().as_bytes())),
             Err(e) => format!("error:{}", e.kind()),
         },
     }
@@ -217,18 +273,37 @@ pub fn diff(before: &[Item], after: &[Item]) -> Vec<(Change, Item)> {
 }
 
 const HEADER: &str = "# glassbox persist v1";
+const SNAPSHOT_CAP: u64 = 256 << 20;
 
 pub fn save(items: &[Item], file: &Path) -> io::Result<()> {
     let mut out = format!("{HEADER}\n");
     for i in items {
         out.push_str(&format!("{}\t{}\t{}\n", i.hash, escape(&i.category), escape(&i.path)));
     }
-    fs::write(file, out)
+    // Write a new file next to the target and rename it into place: a FIFO or symlink
+    // planted at the target is replaced, never opened or written through.
+    let tmp = file.with_file_name(format!(
+        ".{}.{}.tmp",
+        file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        std::process::id()
+    ));
+    let mut f = fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+    std::io::Write::write_all(&mut f, out.as_bytes())?;
+    f.sync_all()?;
+    fs::rename(&tmp, file).inspect_err(|_| {
+        let _ = fs::remove_file(&tmp);
+    })
 }
 
 pub fn load(file: &Path) -> io::Result<Vec<Item>> {
-    let text = fs::read_to_string(file)?;
-    let mut lines = text.lines();
+    // The snapshot may sit where the audited agent can write: read it like any other planted file.
+    let (raw, size) = safe::read_capped(file, SNAPSHOT_CAP)?;
+    if size > SNAPSHOT_CAP {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot is too large"));
+    }
+    let text = String::from_utf8(raw).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "snapshot is not UTF-8"))?;
+    // A trailing \r is a line-ending artefact (CRLF): paths store \r escaped as \\r.
+    let mut lines = text.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).filter(|l| !l.is_empty());
     if lines.next() != Some(HEADER) {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "not a glassbox persist snapshot"));
     }
@@ -237,14 +312,14 @@ pub fn load(file: &Path) -> io::Result<Vec<Item>> {
             let mut f = l.splitn(3, '\t');
             match (f.next(), f.next(), f.next()) {
                 (Some(h), Some(c), Some(p)) => Ok(Item { hash: h.into(), category: unescape(c), path: unescape(p) }),
-                _ => Err(io::Error::new(io::ErrorKind::InvalidData, format!("bad snapshot line: {l}"))),
+                _ => Err(io::Error::new(io::ErrorKind::InvalidData, "bad snapshot line")),
             }
         })
         .collect()
 }
 
 fn escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('\t', "\\t").replace('\n', "\\n")
+    s.replace('\\', "\\\\").replace('\t', "\\t").replace('\n', "\\n").replace('\r', "\\r")
 }
 
 fn unescape(s: &str) -> String {
@@ -255,6 +330,7 @@ fn unescape(s: &str) -> String {
             match chars.next() {
                 Some('t') => out.push('\t'),
                 Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
                 Some(o) => out.push(o),
                 None => out.push('\\'),
             }

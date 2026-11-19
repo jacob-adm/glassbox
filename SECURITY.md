@@ -20,7 +20,13 @@ directory that may hold credentials and private data, to find out whether they *
   only the `mcpServers` and `hooks` sections are hashed.
 - **Runs nothing from the paths it probes.** `persist` runs `crontab -l` to read your own crontab; on macOS `reach` runs `ps` (from `PATH`) to read the process
   chain; on Linux it reads `/proc`. Arguments are passed directly, never through a shell.
-- **Escapes what it prints.** Command names from the process chain are escaped in JSON output.
+- **Treats every file as possibly hostile.** The audited agents can write the files glassbox reads.
+  Files are checked to be regular before and after opening, opened without blocking and without
+  acquiring a terminal, so a FIFO, device or symlink to `/dev/zero` cannot hang it or exhaust memory.
+  JSON is parsed strictly (RFC 8259) without unbounded recursion. Tests in `tests/hostile.rs` and
+  `tests/fuzz.rs` cover each case.
+- **Escapes what it prints.** Control, bidirectional and zero-width characters in names are shown
+  as escapes in text output, so a file name cannot erase, reorder or hide report lines.
 
 ## Reporting a vulnerability
 

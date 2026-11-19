@@ -1,6 +1,7 @@
 use glassbox::models::{self, Model};
 use glassbox::persist::{self, Change};
 use glassbox::reach::{self, Finding, Reach};
+use glassbox::safe::visible;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -45,24 +46,14 @@ fn main() -> ExitCode {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
     }
-    let mut a = Args { json: false, strict: false, home: std::env::var_os("HOME").map(PathBuf::from), dirs: Vec::new(), repos: Vec::new(), save: None, since: None };
-    let mut it = args.iter().skip(1);
-    while let Some(arg) = it.next() {
-        match (arg.as_str(), command) {
-            ("--json", _) => a.json = true,
-            ("--strict", Some("reach" | "persist")) => a.strict = true,
-            ("--home", _) => a.home = it.next().map(PathBuf::from),
-            ("--dir", Some("models")) => a.dirs.extend(it.next().map(PathBuf::from)),
-            ("--repo", Some("persist")) => a.repos.extend(it.next().map(PathBuf::from)),
-            ("--save", Some("persist")) => a.save = it.next().map(PathBuf::from),
-            ("--since", Some("persist")) => a.since = it.next().map(PathBuf::from),
-            _ => {
-                eprintln!("unknown argument: {arg}\n{USAGE}");
-                return ExitCode::from(2);
-            }
+    let a = match parse_args(command.unwrap_or_default(), &args[1..]) {
+        Ok(a) => a,
+        Err(msg) => {
+            eprintln!("{msg}\n{USAGE}");
+            return ExitCode::from(2);
         }
-    }
-    let Some(home) = a.home.clone() else {
+    };
+    let Some(home) = a.home.clone().or_else(|| std::env::var_os("HOME").map(PathBuf::from)) else {
         eprintln!("HOME is not set; pass --home");
         return ExitCode::from(2);
     };
@@ -84,6 +75,46 @@ fn main() -> ExitCode {
     if strict && exposed { ExitCode::from(1) } else { ExitCode::SUCCESS }
 }
 
+/// Each option is accepted only by the commands it affects, at most once (except the
+/// repeatable --dir and --repo), and an option never consumes another option as its value.
+fn parse_args(command: &str, args: &[String]) -> Result<Args, String> {
+    let mut a = Args { json: false, strict: false, home: None, dirs: Vec::new(), repos: Vec::new(), save: None, since: None };
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        let mut value = || match it.next() {
+            Some(v) if !v.starts_with("--") => Ok(PathBuf::from(v)),
+            _ => Err(format!("{arg} needs a value")),
+        };
+        let once = |slot: &Option<PathBuf>| if slot.is_some() { Err(format!("{arg} given twice")) } else { Ok(()) };
+        match (arg.as_str(), command) {
+            ("--json", _) => a.json = true,
+            ("--strict", "reach" | "persist") => a.strict = true,
+            ("--home", _) => {
+                once(&a.home)?;
+                a.home = Some(value()?);
+            }
+            ("--dir", "models") => a.dirs.push(value()?),
+            ("--repo", "persist") => a.repos.push(value()?),
+            ("--save", "persist") => {
+                once(&a.save)?;
+                a.save = Some(value()?);
+            }
+            ("--since", "persist") => {
+                once(&a.since)?;
+                a.since = Some(value()?);
+            }
+            _ => return Err(format!("unknown argument: {arg}")),
+        }
+    }
+    if a.save.is_some() && a.since.is_some() {
+        return Err("use --save or --since, not both".into());
+    }
+    if command == "persist" && a.strict && a.since.is_none() {
+        return Err("--strict needs --since".into());
+    }
+    Ok(a)
+}
+
 fn display(f: &Finding) -> String {
     format!("~/{}", f.location.rel)
 }
@@ -91,10 +122,10 @@ fn display(f: &Finding) -> String {
 fn print_text(findings: &[Finding], chain: &[(u32, String)]) {
     println!("Process chain (nearest first):");
     for (pid, comm) in chain {
-        println!("  {pid:>7}  {comm}");
+        println!("  {pid:>7}  {}", visible(comm));
     }
     if let Some(app) = reach::responsible_app(chain) {
-        println!("Privacy grants on macOS follow the responsible app: {app}");
+        println!("Privacy grants on macOS follow the responsible app: {}", visible(&app));
     }
     println!();
     for f in findings.iter().filter(|f| f.reach != Reach::Absent) {
@@ -152,11 +183,11 @@ fn run_models(home: &Path, a: &Args) -> ExitCode {
         println!("No model files found. Use --dir to add a directory of .gguf or .safetensors files.");
         return ExitCode::SUCCESS;
     }
-    let w = rows.iter().map(|(m, _)| m.name.chars().count()).max().unwrap_or(5).max(5);
+    let w = rows.iter().map(|(m, _)| visible(&m.name).chars().count()).max().unwrap_or(5).max(5);
     println!("{:<w$}  {:<11}  {:>9}  {:>9}  {:>4}", "MODEL", "SOURCE", "SIZE", "IN MEMORY", "");
     for (m, r) in &rows {
         let pct = if m.bytes == 0 { 0.0 } else { 100.0 * *r as f64 / m.bytes as f64 };
-        println!("{:<w$}  {:<11}  {:>9}  {:>9}  {:>3.0}%", m.name, m.source, size(m.bytes), size(*r), pct);
+        println!("{:<w$}  {:<11}  {:>9}  {:>9}  {:>3.0}%", visible(&m.name), m.source, size(m.bytes), size(*r), pct);
     }
     let (total, warm): (u64, u64) = rows.iter().fold((0, 0), |(t, w), (m, r)| (t + m.bytes, w + r));
     println!("\n{} model(s), {} on disk, {} in the page cache.", rows.len(), size(total), size(warm));
@@ -173,10 +204,6 @@ fn size(bytes: u64) -> String {
 }
 
 fn run_persist(home: &Path, a: &Args) -> ExitCode {
-    if a.save.is_some() && a.since.is_some() {
-        eprintln!("use --save or --since, not both\n{USAGE}");
-        return ExitCode::from(2);
-    }
     let now = persist::collect(home, &a.repos);
     if let Some(file) = &a.save {
         if let Err(e) = persist::save(&now, file) {
@@ -195,7 +222,7 @@ fn run_persist(home: &Path, a: &Args) -> ExitCode {
             println!("{{\"items\":[{}]}}", items.join(","));
         } else {
             for i in &now {
-                println!("{:<15} {}", i.category, i.path);
+                println!("{:<15} {}", visible(&i.category), visible(&i.path));
             }
             println!("\n{} persistence point(s). Save a snapshot with --save FILE before a run, then compare with --since FILE.", now.len());
         }
@@ -220,7 +247,7 @@ fn run_persist(home: &Path, a: &Args) -> ExitCode {
     } else {
         for (c, i) in &changes {
             let mark = match c { Change::Added => "+", Change::Changed => "~", Change::Removed => "-" };
-            println!("{mark} {:<8} {:<15} {}", c.as_str(), i.category, i.path);
+            println!("{mark} {:<8} {:<15} {}", c.as_str(), visible(&i.category), visible(&i.path));
         }
     }
     let flagged = changes.iter().any(|(c, _)| *c != Change::Removed);

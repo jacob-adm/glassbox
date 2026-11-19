@@ -155,6 +155,10 @@ Models are sorted by bytes in memory, then name.
   its weights in GPU or other anonymous memory, which is not counted. Use the server's own status
   (for example `ollama ps`) for that.
 - Only `.gguf` and `.safetensors` files are counted; PyTorch `.bin` checkpoints are not.
+- Only the ranges of a file that hold data are measured (`SEEK_DATA`/`SEEK_HOLE`); holes in a sparse
+  file are skipped. Model files are not sparse, so this changes nothing for them, and a huge sparse
+  file cannot stall the command.
+- Ollama blobs are found only through digests of the form `sha256:` plus 64 hex digits.
 
 ## `glassbox persist`
 
@@ -235,6 +239,16 @@ Without `--since`, `--json` prints `{"items":[{"category":…,"path":…,"sha256
 - macOS login items registered through Background Task Management (`sfltool dumpbtm`) are not read,
   because reading them requires administrator authentication.
 - Only your own crontab is read; other users' crontabs require root.
+- Files are hashed in full. A file larger than 1 GiB is compared by size, inode and change time
+  (ctime, which a normal user cannot set) instead, so a huge file cannot stall the audit.
+- FIFOs, devices and sockets are never read; they are compared by type and symlink target.
 - A file that cannot be read is compared by size and modification time instead of content.
+- In `~/.claude.json`, any part nested more than 256 levels deep is included whole and compared as
+  written, because it could hide a hook. Changing, reformatting or reordering it reports a change.
+  This can only add a report, never hide one.
+- A file larger than 1 MiB that is mostly holes (sparse) is compared by size, inode and change time.
+- A directory where a file is expected is compared by the names it contains.
+- `--save` writes a new file and renames it into place, so a FIFO or symlink at the target is replaced,
+  never written through.
 - An agent that can write to the snapshot file can hide its changes. Keep the snapshot where the agent
   cannot write, for example outside its sandbox or working directory.

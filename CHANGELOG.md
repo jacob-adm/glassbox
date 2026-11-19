@@ -15,4 +15,9 @@ Linux, as a single Rust binary with no dependencies.
 - `persist`: SHA-256 snapshots of persistence points (launchd, systemd, cron, shell startup, SSH,
   git config and hooks, Python startup files, AI agent configurations) and a comparison that
   reports what was added, changed or removed. `--strict` exits 1 on added or changed points.
+- `persist --repo` compares across clones and worktrees (labels are relative to the repository),
+  follows linked worktrees and `core.hooksPath`, and watches agent instruction files (`CLAUDE.md`,
+  `AGENTS.md`, `GEMINI.md`, Cursor and Copilot rules, Claude skills, agents and commands).
+- Hardened against files planted by the audited agents: FIFOs, devices, sparse files, deeply nested
+  or malformed JSON and terminal escape sequences cannot hang, crash, stall or mislead it.
 - Tests run against real files, processes and the page cache on macOS and on Linux in Docker.

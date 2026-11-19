@@ -222,7 +222,7 @@ fn run_persist(home: &Path, a: &Args) -> ExitCode {
             println!("{{\"items\":[{}]}}", items.join(","));
         } else {
             for i in &now {
-                println!("{:<15} {}", visible(&i.category), visible(&i.path));
+                println!("{:<18} {}", visible(&i.category), visible(&i.path));
             }
             println!("\n{} persistence point(s). Save a snapshot with --save FILE before a run, then compare with --since FILE.", now.len());
         }
@@ -247,7 +247,7 @@ fn run_persist(home: &Path, a: &Args) -> ExitCode {
     } else {
         for (c, i) in &changes {
             let mark = match c { Change::Added => "+", Change::Changed => "~", Change::Removed => "-" };
-            println!("{mark} {:<8} {:<15} {}", c.as_str(), visible(&i.category), visible(&i.path));
+            println!("{mark} {:<8} {:<18} {}", c.as_str(), visible(&i.category), visible(&i.path));
         }
     }
     let flagged = changes.iter().any(|(c, _)| *c != Change::Removed);

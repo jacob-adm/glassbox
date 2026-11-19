@@ -178,7 +178,7 @@ SHA-256 of each. Save a snapshot before an agent session and compare with it aft
 | `--strict` | With `--since`: exit 1 if anything was added or changed |
 | `--json` | Print JSON |
 | `--home DIR` | Use `DIR` instead of `$HOME` for per-user locations |
-| `--repo DIR` | Also watch `DIR/.git/hooks`, `DIR/.git/config`, `.mcp.json`, `.claude/settings.json`, `.cursor/mcp.json` and `.vscode/mcp.json`; repeatable |
+| `--repo DIR` | Also watch `DIR`'s git hooks (following linked worktrees and `core.hooksPath`), git config, agent configs and agent instruction files; repeatable. Points are labelled `<repo>/…` (`<repo2>/…` for the second), so a snapshot of one clone or worktree compares with another |
 
 ### What is watched
 
@@ -193,11 +193,22 @@ SHA-256 of each. Save a snapshot before an agent session and compare with it aft
 | git config | `~/.gitconfig`, `~/.config/git/config`, each `--repo`'s `.git/config` | the same |
 | git hook | each `--repo`'s `.git/hooks` | the same |
 | python startup | `.pth`, `usercustomize.py`, `sitecustomize.py` in `~/Library/Python/*/…/site-packages` | the same in `~/.local/lib/python*/site-packages` |
+| agent instructions | `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`, `~/.claude/{skills,agents,commands}`; in each `--repo`: `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `.cursorrules`, `.windsurfrules`, `.github/copilot-instructions.md`, `.claude/{skills,agents,commands}`, `.cursor/rules` | the same |
 | agent config | `~/.claude/settings.json`, `~/.claude/settings.local.json`, `~/.cursor/mcp.json`, `~/.codex/config.toml`, `~/.gemini/settings.json`, and the `mcpServers` and `hooks` sections of `~/.claude.json` | the same |
 
 `~/.claude.json` is rewritten with usage data on every session, so only its `mcpServers` and `hooks`
 sections are hashed, at any depth and with keys sorted. Usage counters and key order do not register
 as changes. If the file is not valid JSON, the whole file is hashed.
+
+### Repositories
+
+- Points under a `--repo` are labelled `<repo>/…` (`<repo2>/…` for the second), so pass the `--repo`
+  options in the same order to `--save` and `--since`.
+- Hooks are read from the directory git uses: `core.hooksPath` from `/etc/gitconfig`, `~/.config/git/config`,
+  `~/.gitconfig`, the repository's config and, when `extensions.worktreeConfig` is on, `config.worktree`
+  (later ones win; `~` is expanded). Files pulled in with `include.path` are not read.
+- In a linked worktree, the shared hooks and config of the main repository are watched.
+- A repository's local, untracked Claude instruction file is not watched.
 
 ### Results
 
@@ -232,7 +243,7 @@ Without `--since`, `--json` prints `{"items":[{"category":…,"path":…,"sha256
 |---|---|
 | 0 | Listed, saved, or compared. With `--strict`, also: nothing added or changed |
 | 1 | `--since --strict` and something was added or changed |
-| 2 | Usage error, or the snapshot cannot be read or written |
+| 2 | Usage error, or the snapshot cannot be read or written (including a snapshot saved by a different glassbox version: save a new one) |
 
 ### Limits
 

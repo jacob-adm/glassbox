@@ -97,6 +97,8 @@ glassbox models
 - [Commands](docs/commands.md): each command's options, output and exit status.
 - [Suite study](docs/suite-study.md): every Sysinternals tool assessed for a macOS/Linux port and for
   its value to agent harnesses and inference.
+- [Using glassbox with other tools](docs/integration.md): real runs with git-overlap, pr-merge-audit,
+  a harness installer and devdrop.
 - [Feasibility](docs/feasibility.md): prior art and feasibility for the five candidate tools, and
   why `reach` came first.
 

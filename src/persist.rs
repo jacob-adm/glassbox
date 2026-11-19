@@ -46,6 +46,14 @@ const AGENT_FILES: &[&str] = &[
 /// Files rewritten with usage data on every run: only these keys can make something run.
 const AGENT_KEYED: &[(&str, &[&str])] = &[(".claude.json", &["mcpServers", "hooks"])];
 const REPO_AGENT_FILES: &[&str] = &[".mcp.json", ".claude/settings.json", ".cursor/mcp.json", ".vscode/mcp.json"];
+/// Instructions agents load at the start of every session: changing them steers every later run.
+const INSTRUCTION_FILES: &[&str] = &[".claude/CLAUDE.md", ".codex/AGENTS.md", ".gemini/GEMINI.md"];
+const INSTRUCTION_DIRS: &[&str] = &[".claude/skills", ".claude/agents", ".claude/commands"];
+const REPO_INSTRUCTION_FILES: &[&str] = &[
+    "CLAUDE.md", "AGENTS.md", "GEMINI.md", ".cursorrules", ".windsurfrules",
+    ".github/copilot-instructions.md",
+];
+const REPO_INSTRUCTION_DIRS: &[&str] = &[".claude/skills", ".claude/agents", ".claude/commands", ".cursor/rules"];
 
 #[cfg(target_os = "macos")]
 const HOME_DIRS: &[(&str, &str)] = &[("autostart", "Library/LaunchAgents"), ("shell startup", ".config/fish/conf.d")];
@@ -84,6 +92,12 @@ pub fn collect(home: &Path, repos: &[PathBuf]) -> Vec<Item> {
             c.file(cat, &home.join(rel));
         }
     }
+    for rel in INSTRUCTION_FILES {
+        c.file("agent instructions", &home.join(rel));
+    }
+    for rel in INSTRUCTION_DIRS {
+        c.dir("agent instructions", &home.join(rel), 3);
+    }
     for (rel, keys) in AGENT_KEYED {
         c.json_keys("agent config", &home.join(rel), keys);
     }
@@ -100,11 +114,30 @@ pub fn collect(home: &Path, repos: &[PathBuf]) -> Vec<Item> {
         c.python_startup(&home.join(rel));
     }
     c.crontab();
-    for repo in repos {
-        c.dir("git hook", &repo.join(".git/hooks"), 1);
-        c.file("git config", &repo.join(".git/config"));
+    for (i, repo) in repos.iter().enumerate() {
+        // Labels are relative to the repository, so a snapshot of one clone or worktree
+        // compares cleanly with another.
+        let tag = if i == 0 { "<repo>".to_string() } else { format!("<repo{}>", i + 1) };
+        let git_tag = format!("{tag}/.git");
+        let (git_dir, common_dir) = git_dirs(repo);
+        c.file_in("git config", &common_dir.join("config"), Some((&common_dir, &git_tag)));
+        c.file_in("git config", &git_dir.join("config.worktree"), Some((&git_dir, &git_tag)));
+        match hooks_path(&[common_dir.join("config"), git_dir.join("config.worktree")]) {
+            Some(p) => {
+                let dir = if Path::new(&p).is_absolute() { PathBuf::from(&p) } else { repo.join(&p) };
+                let hooks_tag = format!("{tag}/{p}");
+                c.dir_in("git hook", &dir, 1, Some((&dir, &hooks_tag)));
+            }
+            None => c.dir_in("git hook", &common_dir.join("hooks"), 1, Some((&common_dir, &git_tag))),
+        }
         for rel in REPO_AGENT_FILES {
-            c.file("agent config", &repo.join(rel));
+            c.file_in("agent config", &repo.join(rel), Some((repo, &tag)));
+        }
+        for rel in REPO_INSTRUCTION_FILES {
+            c.file_in("agent instructions", &repo.join(rel), Some((repo, &tag)));
+        }
+        for rel in REPO_INSTRUCTION_DIRS {
+            c.dir_in("agent instructions", &repo.join(rel), 3, Some((repo, &tag)));
         }
     }
     c.items.into_values().collect()
@@ -128,19 +161,31 @@ impl Collector<'_> {
     }
 
     fn file(&mut self, category: &str, path: &Path) {
-        if fs::symlink_metadata(path).is_ok() {
-            let shown = self.show(path);
-            self.add(category, shown, content_hash(path));
-        }
+        self.file_in(category, path, None);
     }
 
     fn dir(&mut self, category: &str, dir: &Path, depth: usize) {
+        self.dir_in(category, dir, depth, None);
+    }
+
+    /// Record `path`, labelled `<tag>/<path relative to base>` when `root` is (base, tag).
+    fn file_in(&mut self, category: &str, path: &Path, root: Option<(&Path, &str)>) {
+        if fs::symlink_metadata(path).is_ok() {
+            let label = match root.and_then(|(base, tag)| path.strip_prefix(base).ok().map(|rel| (tag, rel))) {
+                Some((tag, rel)) => format!("{tag}/{}", rel.display()),
+                None => self.show(path),
+            };
+            self.add(category, label, content_hash(path));
+        }
+    }
+
+    fn dir_in(&mut self, category: &str, dir: &Path, depth: usize, root: Option<(&Path, &str)>) {
         let Ok(entries) = fs::read_dir(dir) else { return };
         for entry in entries.flatten() {
             let p = entry.path();
             match fs::symlink_metadata(&p) {
-                Ok(m) if m.is_dir() && depth > 0 => self.dir(category, &p, depth - 1),
-                Ok(m) if !m.is_dir() => self.file(category, &p),
+                Ok(m) if m.is_dir() && depth > 0 => self.dir_in(category, &p, depth - 1, root),
+                Ok(m) if !m.is_dir() => self.file_in(category, &p, root),
                 _ => {}
             }
         }
@@ -203,6 +248,45 @@ const SPARSE_MIN: u64 = 1 << 20;
 
 /// SHA-256 of a whole regular file. FIFOs, devices and sockets are never opened for
 /// reading; they are identified by type (and a symlink by its target) instead.
+/// (git dir, common dir) of a working tree. In a linked worktree `.git` is a file naming
+/// its own git dir, and hooks and the main config live in the common dir it points to.
+fn git_dirs(repo: &Path) -> (PathBuf, PathBuf) {
+    let dot_git = repo.join(".git");
+    let pointer = fs::symlink_metadata(&dot_git).is_ok_and(|m| m.is_file());
+    let read = |p: &Path| safe::read_capped(p, 4096).ok().map(|(b, _)| String::from_utf8_lossy(&b).trim().to_string());
+    let Some(git_dir) = pointer
+        .then(|| read(&dot_git))
+        .flatten()
+        .and_then(|t| t.strip_prefix("gitdir:").map(|g| repo.join(g.trim())))
+    else {
+        return (dot_git.clone(), dot_git);
+    };
+    let common = read(&git_dir.join("commondir")).map(|c| git_dir.join(c)).unwrap_or_else(|| git_dir.clone());
+    (git_dir, common)
+}
+
+/// `core.hooksPath` from git config files (later files win), if set.
+fn hooks_path(configs: &[PathBuf]) -> Option<String> {
+    let mut found = None;
+    for config in configs {
+        let Ok((raw, _)) = safe::read_capped(config, 1 << 20) else { continue };
+        let mut section = String::new();
+        for line in String::from_utf8_lossy(&raw).lines() {
+            let line = line.trim();
+            if let Some(rest) = line.strip_prefix('[') {
+                section = rest.split([']', ' ', '"']).next().unwrap_or("").to_ascii_lowercase();
+            } else if section == "core" {
+                if let Some((key, value)) = line.split_once('=') {
+                    if key.trim().eq_ignore_ascii_case("hookspath") {
+                        found = Some(value.trim().trim_matches('"').to_string());
+                    }
+                }
+            }
+        }
+    }
+    found.filter(|p| !p.is_empty())
+}
+
 fn content_hash(path: &Path) -> String {
     use std::os::unix::fs::MetadataExt;
     if let Ok(mut file) = safe::open_regular(path) {

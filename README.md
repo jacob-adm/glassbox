@@ -4,9 +4,10 @@ glassbox audits what AI agents and other local processes can access on macOS and
 
 An agent started from your terminal runs as you. It inherits your files, your credentials and, on
 macOS, the privacy grants (such as Full Disk Access) of the app it was launched from. glassbox shows
-that reach before you start the agent. It is a single Rust binary with no dependencies.
+that reach before you start the agent, and reports how much of each local AI model is already in
+memory. It is a single Rust binary with no dependencies.
 
-Status: 0.1.0, unreleased. One command so far: `reach`.
+Status: 0.1.0, unreleased. Two commands: `reach` and `models`.
 
 ## Install
 
@@ -34,6 +35,11 @@ Each location is reported as `readable`, `denied-privacy` (EPERM: a privacy cont
 `denied-permissions` (EACCES: file permissions) or `absent`. The report also shows the process chain
 and, on macOS, the app whose privacy grants apply.
 
+`glassbox models` finds local model weight files (Ollama, LM Studio, the Hugging Face cache, or any
+directory given with `--dir`) and maps each one read-only to ask the kernel which pages are in the
+page cache (`mincore`). No page is read, so measuring does not load the model. A model that is in
+the page cache loads from memory; one that is not loads from disk.
+
 ## Commands
 
 | Command | What it does |
@@ -42,6 +48,9 @@ and, on macOS, the app whose privacy grants apply.
 | `glassbox reach --json` | The same report as JSON, for scripts and agent harnesses |
 | `glassbox reach --strict` | Exit 1 if any sensitive location is readable |
 | `glassbox reach --home DIR` | Audit `DIR` instead of `$HOME` |
+| `glassbox models` | List local models and how much of each is in the page cache |
+| `glassbox models --dir DIR` | Also search `DIR` for `.gguf` and `.safetensors` files |
+| `glassbox models --json` | The same list as JSON |
 
 See [Commands](docs/commands.md) for the full output, exit status and location list.
 
@@ -58,6 +67,12 @@ to start an agent while any are readable:
 
 ```sh
 glassbox reach --strict --json > reach.json && my-agent
+```
+
+To see which local models will load quickly:
+
+```sh
+glassbox models
 ```
 
 ## Documentation

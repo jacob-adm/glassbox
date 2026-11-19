@@ -107,6 +107,13 @@ glassbox models
 - [Feasibility](docs/feasibility.md): prior art and feasibility for the five candidate tools, and
   why `reach` came first.
 
+## Acknowledgements
+
+glassbox's commands are inspired by Microsoft Sysinternals tools: `reach` by AccessChk, `models` by
+RAMMap and `persist` by Autoruns. glassbox is an independent, clean-room project, not affiliated with
+or endorsed by Microsoft, and contains no Sysinternals code. Sysinternals, AccessChk, RAMMap and
+Autoruns are trademarks of Microsoft Corporation.
+
 ## License
 
 Apache-2.0; see `LICENSE`.

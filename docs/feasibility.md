@@ -128,3 +128,67 @@ Recommended start: **5, then 1, then 2.**
 - Prior-art search used GitHub repository search plus the most-starred projects in each space. Absence of evidence is limited to those searches; commercial products (for example endpoint security suites) were not surveyed.
 - Star counts, licences and push dates come from the GitHub API on 2026-11-19. Feature claims come from each project's README or documentation, linked in place.
 - Both feasibility checks ran on one macOS machine and are not yet repeated on Linux.
+
+---
+
+# Second round: trigger capture and fault injection
+
+Two further candidates from `docs/suite-study.md`, checked the same way on 2026-11-19.
+
+| Candidate | Inspired by | Verdict | One-line reason |
+|---|---|---|---|
+| Trigger capture | ProcDump | **BUILD (narrow)** | Observability platforms record model and tool calls; none was found that snapshots *machine state* when a local agent trips a trigger. Signals verified on real transcripts. |
+| Fault injection | NotMyFault | **SKIP; adopt** | Model-API faults (llmposter, MockServer) and MCP faults (agentchaos, AgentBuster, MCP-Injector) are already covered, with peer-reviewed studies behind them. |
+
+## Trigger capture: "what was the machine doing when the agent went wrong?"
+
+**Question it answers.** When an agent loops, burns tokens or keeps failing, capture the state of the machine at that moment, next to the agent's own record. ProcDump does this for a process: dump on a trigger (CPU, memory, exception).
+
+**Prior art**
+
+| Project | Stars | Licence | Last push | Covers |
+|---|---|---|---|---|
+| [langfuse/langfuse](https://github.com/langfuse/langfuse) | 37,635 | other | 2026-11-19 | Tracing of model and tool calls through an SDK; hosted or self-hosted |
+| [Arize-ai/phoenix](https://github.com/Arize-ai/phoenix) | 12,356 | other | 2026-11-19 | Tracing and evaluation |
+| [traceloop/openllmetry](https://github.com/traceloop/openllmetry) | 7,544 | Apache-2.0 | 2026-11-19 | OpenTelemetry instrumentation for LLM calls |
+| [AgentOps-AI/agentops](https://github.com/AgentOps-AI/agentops) | 5,965 | MIT | 2026-06-25 | Agent session recording through an SDK |
+| [liuchunwei732-cmyk/loopbuster](https://github.com/liuchunwei732-cmyk/loopbuster) | 83 | MIT | 2026-06-05 | Loop detection and budget ceilings inside an agent framework |
+| [joe-re/eyes-on-claude-code](https://github.com/joe-re/eyes-on-claude-code) and similar | 27 | MIT | 2026-11-18 | Live session status displays |
+
+The [OpenTelemetry GenAI conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/) define agent, model-call and tool spans with token counts, so the *agent side* of a trace is a solved, standard problem.
+
+**Gap.** Everything found records the agent's own calls, needs an SDK or a framework, and stops at the model boundary. None captures what the machine looked like when a trigger fired: persistence added since the session began (`glassbox persist`), the agent's process tree, and the working tree's uncommitted changes. None works from the transcripts command-line agents already write locally.
+
+**Feasibility, checked on a macOS test machine on 2026-11-19.** Claude Code writes each session as JSON lines. Three recent sessions held 9,856 records with per-message token usage (`input_tokens`, `output_tokens`, cache fields) and 1,309 `tool_use` blocks. Fingerprinting each call (tool name plus a hash of its arguments, no content read) gave this baseline from real work:
+
+| Session | Tool calls | Distinct | Most repeats of one identical call | Longest identical run | Output tokens per turn (median / p99 / max) |
+|---|---|---|---|---|---|
+| 1 | 17 | 9 | 4 | 1 | 4,278 / 7,726 / 7,726 |
+| 2 | 820 | 785 | 3 | 2 | 550 / 4,281 / 9,821 |
+| 3 | 472 | 438 | 5 | 2 | 851 / 6,108 / 8,661 |
+
+A trigger of four identical calls in a row would have fired zero times on this real work, so loop detection from local transcripts is feasible with a low false-alarm rate. No Codex sessions were present on the test machine, so Codex support is unverified.
+
+**Risks**
+- The transcript format is not a documented interface and can change between agent versions; the reader must fail loudly on an unknown format, not guess.
+- Thresholds from three sessions are a starting point, not a calibration; they need to be configurable and reported with the trigger.
+- Capturing must never read transcript content into the report beyond what is needed to name the trigger, because transcripts can hold secrets.
+
+**Verdict: BUILD (narrow).** `glassbox watch`: follow a local agent session; on a loop, token spike or run of failed tool calls, write a capture bundle with the trigger, the persistence diff since the session began, the agent's process tree and the working tree's change summary; optionally pause the agent (SIGSTOP, as Sysinternals PsSuspend does) so a person can look before it continues.
+
+## Fault injection: "does the agent tooling survive a broken model or tool?"
+
+**Prior art**
+
+| Project | Status (2026-11-19) | Covers |
+|---|---|---|
+| [llmposter](https://crates.io/crates/llmposter) ([repo](https://github.com/SkillDoAI/llmposter)) | 0.5.0, about 1,030 downloads, updated 2026-07-07 | Mock OpenAI, Anthropic and Gemini APIs with seeded failures: 429 and 529 status codes, streaming delays, duplicated and truncated frames |
+| [MockServer `LlmChaosProfile`](https://mock-server.com/versions/7.1.0/apidocs/org/mockserver/model/LlmChaosProfile.html) | in MockServer 7.1.0 | Probabilistic provider errors with Retry-After, mid-stream truncation, malformed SSE chunks |
+| [dta-au/errorworks](https://github.com/dta-au/errorworks) (ChaosLLM) | 0 stars, pushed 2026-10-11 | Fake OpenAI-compatible server with rate limits, timeouts and malformed JSON |
+| [seanrobmerriam/agentchaos](https://github.com/seanrobmerriam/agentchaos) | 1 star, pushed 2026-07-20 | MCP proxy: drop, duplicate, reorder, kill and corrupt messages |
+| [yuchengw001-hub/AgentBuster](https://github.com/yuchengw001-hub/AgentBuster) | 2 stars, early access | Local agent testing with MCP failures |
+| [Shopify/toxiproxy](https://github.com/Shopify/toxiproxy) | 12,541 stars, MIT | Network-level latency, timeouts and resets in front of any endpoint |
+
+**Peer-reviewed and preprint grounding.** ReliabilityBench ([arXiv:2601.06112](https://arxiv.org/abs/2601.06112)) injects timeouts, rate limits, partial responses and schema drift and reports that single-run pass rates overstate reliability by 20 to 40 percent. *Loud Failures, Quiet Failures* ([arXiv:2610.10062](https://arxiv.org/abs/2610.10062)) injects typed tool faults into multi-turn tool use. *When Tools Fail, Agents Fabricate* ([NeurIPS 2026](https://neurips.cc/virtual/2026/173038)) reports 27 to 54 percent correct recovery and 19 to 30 percent confident fabrication across 2,100 fault-fired runs. *The Scaling Paradox of Tool-Calling LLM Agents Under Realistic MCP Faults* ([NeurIPS 2026](https://neurips.cc/virtual/2026/poster/151564)) introduces MCP-Injector for permanent, transient and intermittent MCP faults.
+
+**Verdict: SKIP; adopt.** Both layers already have tools, and the research shows how to use them. Use llmposter or MockServer for model-API faults and an MCP fault proxy for tool faults when testing agent tooling. One narrow gap remains in the search results (rewriting tool-call arguments in model responses), which ChaosLLM's malformed-JSON mode partly covers; it does not justify a new tool.

@@ -282,7 +282,7 @@ Follows a local agent session and captures the machine's state when the agent go
 | `--spike TOKENS` | Output tokens in one assistant turn that count as a spike (default 16000) |
 | `--failures N` | Failed tool calls in a row (default 5) |
 | `--pid PID` | The agent's process: its process tree goes into each capture, and watching stops when it exits |
-| `--pause` | With `--pid`: stop the agent (SIGSTOP) when a trigger fires. Resume it with `kill -CONT PID` |
+| `--pause` | With `--pid`, while following: stop the agent (SIGSTOP) when a trigger fires. Resume it with `kill -CONT PID`. Refused with `--once`, so a scan of past activity never stops a live process |
 | `--repo DIR` | Also watch `DIR`'s persistence points and record its uncommitted changes; repeatable |
 | `--home DIR` | Use `DIR` instead of `$HOME` |
 
@@ -292,7 +292,9 @@ When following, glassbox starts at the end of the transcript, so what is already
 fire, and takes a `persist` snapshot. Each new line is parsed for structure only: record type, tool
 name, a SHA-256 of the tool name and arguments, output token count and the tool result's error flag.
 A loop fires once when a run of identical calls reaches the threshold; failures fire once when a run
-of failed results reaches it; a spike fires for each turn over the threshold.
+of failed results reaches it; a spike fires once per model response over the threshold (Claude Code
+writes one response as several lines sharing an id). Line numbers in triggers are line numbers in the
+transcript file. A transcript replaced by rename is followed from the start of the new file.
 
 The default thresholds come from real sessions: across 1,309 tool calls in three sessions, no
 identical call ran more than twice in a row, and no turn produced more than 9,821 output tokens.
@@ -300,7 +302,9 @@ Across 10 real sessions, `--once` with the defaults fired nothing.
 
 ### Captures
 
-Each trigger writes a directory `<seconds>-<n>-<kind>` with:
+Each trigger writes a new directory `<seconds>-<n>-<kind>` (with a numeric suffix if that name exists;
+an existing directory is never reused, and files are always created new, so nothing is written
+through a planted link) with:
 
 | File | Contents |
 |---|---|

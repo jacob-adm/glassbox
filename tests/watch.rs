@@ -163,21 +163,143 @@ fn process_state(pid: &str) -> String {
 }
 
 #[test]
-fn pause_stops_the_agent_process() {
-    let dir = scratch("pause");
+fn pause_stops_the_agent_process_and_its_tree_is_captured() {
+    let (dir, home, out) = (scratch("pause"), scratch("pause-home"), scratch("pause-out"));
     let mut agent = Command::new("sleep").arg("60").spawn().unwrap();
     let pid = agent.id().to_string();
-    let path = transcript(&dir, &repeated(4));
-    let captures = dir.join("captures");
-    let (code, out) = once(&[path.to_str().unwrap(), "--pid", &pid, "--pause", "--out", captures.to_str().unwrap()], &dir);
-    let capture = fs::read_dir(&captures).unwrap().next().unwrap().unwrap().path();
-    let tree = fs::read_to_string(capture.join("processes.txt")).unwrap();
-    assert!(tree.lines().any(|l| l.starts_with(&format!("{pid}\t")) && l.ends_with("sleep")), "{tree}");
+    let path = transcript(&dir, &[call(0, "Read", r#"{"file":"a"}"#, 50)]);
+    let mut child = follow(&path, &home, &out, &["--pid", &pid, "--pause"]);
+    let mut f = fs::OpenOptions::new().append(true).open(&path).unwrap();
+    f.write_all((repeated(4).join("\n") + "\n").as_bytes()).unwrap();
+    drop(f);
+    let capture = wait_for_capture(&out);
+    std::thread::sleep(Duration::from_millis(300));
     let stat = process_state(&pid);
     let _ = Command::new("kill").args(["-CONT", &pid]).status();
     agent.kill().unwrap();
     agent.wait().unwrap();
-    assert_eq!(code, 1, "{out}");
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let tree = fs::read_to_string(capture.join("processes.txt")).unwrap();
+    assert!(tree.lines().any(|l| l.starts_with(&format!("{pid}\t")) && l.ends_with("sleep")), "{tree}");
     assert!(stat.trim_start().starts_with('T'), "agent not stopped: {stat:?}");
-    assert!(out.contains("kill -CONT"), "no resume instruction: {out}");
+}
+
+#[test]
+fn pause_is_refused_with_once() {
+    let dir = scratch("pause-once");
+    let path = transcript(&dir, &repeated(4));
+    assert_eq!(once(&[path.to_str().unwrap(), "--pid", "1", "--pause"], &dir).0, 2);
+}
+
+// Review of the first version.
+
+#[test]
+fn one_response_split_over_several_lines_spikes_once() {
+    let dir = scratch("split");
+    let part = |block: &str| {
+        format!(r#"{{"type":"assistant","message":{{"id":"msg_1","role":"assistant","content":[{block}],"usage":{{"output_tokens":20000}}}}}}"#)
+    };
+    let path = transcript(&dir, &[part(r#"{"type":"thinking","thinking":"x"}"#), part(r#"{"type":"text","text":"y"}"#), part(r#"{"type":"text","text":"z"}"#)]);
+    let (code, out) = once(&[path.to_str().unwrap()], &dir);
+    assert_eq!(code, 1);
+    assert_eq!(out.matches("trigger spike").count(), 1, "{out}");
+}
+
+#[test]
+fn a_planted_capture_directory_is_never_written_through() {
+    let (dir, out) = (scratch("plant"), scratch("plant-out"));
+    let victim = dir.join("victim");
+    fs::write(&victim, "keep me").unwrap();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    for s in now..now + 30 {
+        let d = out.join(format!("{s}-1-loop"));
+        fs::create_dir_all(&d).unwrap();
+        for f in ["trigger.json", "persist.json"] {
+            std::os::unix::fs::symlink(&victim, d.join(f)).unwrap();
+        }
+    }
+    let path = transcript(&dir, &repeated(4));
+    let (code, _) = once(&[path.to_str().unwrap(), "--out", out.to_str().unwrap()], &dir);
+    assert_eq!(code, 1);
+    assert_eq!(fs::read_to_string(&victim).unwrap(), "keep me");
+}
+
+#[test]
+fn another_users_process_counts_as_alive() {
+    // pid 1 belongs to root: signalling it fails with EPERM for an unprivileged user.
+    if String::from_utf8(Command::new("id").arg("-u").output().unwrap().stdout).unwrap().trim() != "0" {
+        assert!(glassbox::watch::alive(1));
+    }
+}
+
+#[test]
+fn a_character_split_across_two_reads_is_reassembled() {
+    let dir = scratch("utf8");
+    let path = dir.join("t.jsonl");
+    fs::write(&path, "").unwrap();
+    let mut follower = glassbox::watch::Follower::at_end(&path).unwrap();
+    let line = "{\"type\":\"user\",\"message\":{\"content\":\"é\"}}\n".as_bytes();
+    let cut = line.iter().position(|b| *b == 0xC3).unwrap() + 1;
+    let mut f = fs::OpenOptions::new().append(true).open(&path).unwrap();
+    f.write_all(&line[..cut]).unwrap();
+    assert!(follower.new_lines().unwrap().is_empty());
+    f.write_all(&line[cut..]).unwrap();
+    assert_eq!(follower.new_lines().unwrap(), vec![String::from_utf8(line[..line.len() - 1].to_vec()).unwrap()]);
+}
+
+#[test]
+fn a_transcript_replaced_by_rename_is_followed() {
+    let dir = scratch("rename");
+    let path = dir.join("t.jsonl");
+    fs::write(&path, "old\n").unwrap();
+    let mut follower = glassbox::watch::Follower::at_end(&path).unwrap();
+    let tmp = dir.join("t.tmp");
+    fs::write(&tmp, "new\n").unwrap();
+    fs::rename(&tmp, &path).unwrap();
+    assert_eq!(follower.new_lines().unwrap(), vec!["new".to_string()]);
+}
+
+#[test]
+fn trigger_line_numbers_are_transcript_line_numbers_when_following() {
+    let (dir, home, out) = (scratch("lines"), scratch("lines-home"), scratch("lines-out"));
+    let history: Vec<String> = (0..5).map(|i| call(100 + i, "Read", &format!(r#"{{"n":{i}}}"#), 50)).collect();
+    let path = transcript(&dir, &history);
+    let mut child = follow(&path, &home, &out, &[]);
+    let mut f = fs::OpenOptions::new().append(true).open(&path).unwrap();
+    f.write_all((repeated(4).join("\n") + "\n").as_bytes()).unwrap();
+    drop(f);
+    let capture = wait_for_capture(&out);
+    child.kill().unwrap();
+    child.wait().unwrap();
+    // Lines 6..13 are call/result pairs; the fourth identical call is line 12.
+    assert!(fs::read_to_string(capture.join("trigger.json")).unwrap().contains("\"line\":12"));
+}
+
+#[test]
+fn tool_names_are_escaped_once_in_trigger_json() {
+    let (dir, out) = (scratch("toolname"), scratch("toolname-out"));
+    let lines: Vec<String> = (0..4).map(|i| call(i, "mcp__x\\\"y", "{}", 50)).collect();
+    let path = transcript(&dir, &lines);
+    assert_eq!(once(&[path.to_str().unwrap(), "--out", out.to_str().unwrap()], &dir).0, 1);
+    let capture = fs::read_dir(&out).unwrap().next().unwrap().unwrap().path();
+    let trigger = fs::read_to_string(capture.join("trigger.json")).unwrap();
+    assert!(trigger.contains(r#""tool":"mcp__x\"y""#), "{trigger}");
+}
+
+#[test]
+fn a_first_line_still_being_written_is_not_an_unknown_format() {
+    let (dir, home, out) = (scratch("partial"), scratch("partial-home"), scratch("partial-out"));
+    let path = dir.join("session.jsonl");
+    fs::write(&path, r#"{"type":"assistant","message":{"content":[{"type":"text","text":"half"#).unwrap();
+    let mut child = follow(&path, &home, &out, &[]);
+    child.kill().unwrap();
+    child.wait().unwrap();
+}
+
+#[test]
+fn watch_options_may_be_given_once() {
+    let dir = scratch("dupes");
+    let path = transcript(&dir, &repeated(1));
+    assert_eq!(once(&[path.to_str().unwrap(), "--loop", "3", "--loop", "4"], &dir).0, 2);
 }

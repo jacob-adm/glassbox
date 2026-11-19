@@ -4,14 +4,16 @@
 //! error flags); its content never reaches the output or a capture.
 use crate::json::{self, Value};
 use crate::persist::{self, Item};
-use crate::safe::visible;
+use crate::safe::{json_escape, visible};
 use crate::sha256;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io::{self, BufRead, Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[derive(Debug, Clone, Copy)]
 pub struct Thresholds {
     /// Identical tool calls (same tool, same arguments) in a row.
     pub repeats: u64,
@@ -28,9 +30,11 @@ pub struct Trigger {
     pub kind: &'static str,
     pub value: u64,
     pub threshold: u64,
+    /// Tool name in canonical JSON-escaped form (as stored by `json::Value::Str`).
     pub tool: Option<String>,
     /// SHA-256 of the tool name and canonical arguments; identifies the call without its content.
     pub fingerprint: Option<String>,
+    /// Line number in the transcript file.
     pub line: u64,
 }
 
@@ -49,16 +53,17 @@ impl Trigger {
     }
 
     pub fn to_json(&self, transcript: &Path) -> String {
-        let opt = |v: &Option<String>| v.as_ref().map_or("null".into(), |s| format!("\"{}\"", esc(s)));
+        // The tool name is already in escaped form; the fingerprint is hex.
+        let raw = |v: &Option<String>| v.as_ref().map_or("null".into(), |s| format!("\"{s}\""));
         format!(
             "{{\"kind\":\"{}\",\"value\":{},\"threshold\":{},\"tool\":{},\"fingerprint\":{},\"line\":{},\"transcript\":\"{}\"}}",
             self.kind,
             self.value,
             self.threshold,
-            opt(&self.tool),
-            opt(&self.fingerprint),
+            raw(&self.tool),
+            raw(&self.fingerprint),
             self.line,
-            esc(&transcript.display().to_string())
+            json_escape(&transcript.display().to_string())
         )
     }
 }
@@ -67,6 +72,7 @@ impl Trigger {
 pub struct Detector {
     t: Thresholds,
     last_call: Option<String>,
+    last_message: Option<String>,
     run: u64,
     failed: u64,
     pub recognised: u64,
@@ -74,8 +80,9 @@ pub struct Detector {
 }
 
 impl Detector {
-    pub fn new(t: Thresholds) -> Self {
-        Detector { t, last_call: None, run: 0, failed: 0, recognised: 0, line: 0 }
+    /// `lines_before`: lines already in the transcript, so reported line numbers match the file.
+    pub fn new(t: Thresholds, lines_before: u64) -> Self {
+        Detector { t, last_call: None, last_message: None, run: 0, failed: 0, recognised: 0, line: lines_before }
     }
 
     /// Feed one transcript line; returns the triggers it fires.
@@ -88,9 +95,18 @@ impl Detector {
             return fired;
         };
         self.recognised += 1;
-        if let Some(out) = get(message, "usage").and_then(|u| get(u, "output_tokens")).and_then(as_u64) {
-            if out > self.t.spike {
-                fired.push(self.trigger("spike", out, self.t.spike, None, None));
+        // One model response is written as several lines (one per content block), each
+        // repeating the response's id and usage: count it once.
+        let id = get(message, "id").and_then(as_str).map(str::to_string);
+        let new_response = id.is_none() || id != self.last_message;
+        if id.is_some() {
+            self.last_message = id;
+        }
+        if new_response {
+            if let Some(out) = get(message, "usage").and_then(|u| get(u, "output_tokens")).and_then(as_u64) {
+                if out > self.t.spike {
+                    fired.push(self.trigger("spike", out, self.t.spike, None, None));
+                }
             }
         }
         let Some(Value::Arr(blocks)) = get(message, "content") else { return fired };
@@ -149,19 +165,6 @@ fn as_u64(v: &Value) -> Option<u64> {
     }
 }
 
-fn esc(s: &str) -> String {
-    let mut out = String::new();
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out
-}
-
 /// The most recently modified Claude Code transcript under `home`.
 pub fn latest_transcript(home: &Path) -> Option<PathBuf> {
     let projects = home.join(".claude/projects");
@@ -181,6 +184,29 @@ pub fn latest_transcript(home: &Path) -> Option<PathBuf> {
     newest.map(|(_, p)| p)
 }
 
+/// Calls `f` with every line of `path` (without the newline), streaming, never holding the file.
+pub fn for_each_line(path: &Path, mut f: impl FnMut(&str)) -> io::Result<()> {
+    let reader = io::BufReader::new(crate::safe::open_regular(path)?);
+    for line in reader.split(b'\n') {
+        f(&String::from_utf8_lossy(&line?));
+    }
+    Ok(())
+}
+
+/// Number of complete lines in `path`.
+pub fn line_count(path: &Path) -> io::Result<u64> {
+    let mut file = crate::safe::open_regular(path)?;
+    let mut buf = vec![0u8; 1 << 20];
+    let mut n = 0u64;
+    loop {
+        let read = file.read(&mut buf)?;
+        if read == 0 {
+            return Ok(n);
+        }
+        n += buf[..read].iter().filter(|b| **b == b'\n').count() as u64;
+    }
+}
+
 /// What a capture needs besides the trigger.
 pub struct Context<'a> {
     pub transcript: &'a Path,
@@ -191,16 +217,35 @@ pub struct Context<'a> {
 }
 
 /// Write a capture directory for `trigger` under `out`; returns its path.
+///
+/// The directory is always newly created (never one that already exists, which a
+/// watched agent could have planted with symlinks inside), and every file in it is
+/// created new, so nothing is ever written through a link.
 pub fn capture(out: &Path, seq: u64, trigger: &Trigger, ctx: &Context) -> io::Result<PathBuf> {
+    fs::create_dir_all(out)?;
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    let dir = out.join(format!("{secs}-{seq}-{}", trigger.kind));
-    fs::create_dir_all(&dir)?;
-    // Written last-but-one so a reader that sees trigger.json and persist.json sees a complete capture.
+    let base = format!("{secs}-{seq}-{}", trigger.kind);
+    let mut dir = out.join(&base);
+    let mut n = 1;
+    loop {
+        match fs::create_dir(&dir) {
+            Ok(()) => break,
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists && n < 1000 => {
+                n += 1;
+                dir = out.join(format!("{base}-{n}"));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    let write_new = |name: &str, text: &str| -> io::Result<()> {
+        let mut f = fs::OpenOptions::new().write(true).create_new(true).open(dir.join(name))?;
+        f.write_all(text.as_bytes())
+    };
     if let Some(pid) = ctx.pid {
-        fs::write(dir.join("processes.txt"), process_tree(pid))?;
+        write_new("processes.txt", &process_tree(pid))?;
     }
     if !ctx.repos.is_empty() {
-        fs::write(dir.join("repos.txt"), repo_changes(ctx.repos))?;
+        write_new("repos.txt", &repo_changes(ctx.repos))?;
     }
     let changes = match ctx.baseline {
         Some(before) => persist::diff(before, &persist::collect(ctx.home, ctx.repos)),
@@ -208,16 +253,19 @@ pub fn capture(out: &Path, seq: u64, trigger: &Trigger, ctx: &Context) -> io::Re
     };
     let items: Vec<String> = changes
         .iter()
-        .map(|(c, i)| format!("{{\"change\":\"{}\",\"category\":\"{}\",\"path\":\"{}\"}}", c.as_str(), esc(&i.category), esc(&i.path)))
+        .map(|(c, i)| {
+            format!("{{\"change\":\"{}\",\"category\":\"{}\",\"path\":\"{}\"}}", c.as_str(), json_escape(&i.category), json_escape(&i.path))
+        })
         .collect();
-    fs::write(dir.join("persist.json"), format!("{{\"since_watch_began\":{},\"changes\":[{}]}}\n", ctx.baseline.is_some(), items.join(",")))?;
-    fs::write(dir.join("trigger.json"), trigger.to_json(ctx.transcript) + "\n")?;
+    write_new("persist.json", &format!("{{\"since_watch_began\":{},\"changes\":[{}]}}\n", ctx.baseline.is_some(), items.join(",")))?;
+    // Last, so a reader that sees trigger.json sees a complete capture.
+    write_new("trigger.json", &(trigger.to_json(ctx.transcript) + "\n"))?;
     Ok(dir)
 }
 
-/// Every process as (pid, parent, "state<TAB>command name"). Command arguments are never
-/// read: they can hold secrets. Linux reads /proc (minimal systems have no ps); macOS uses ps.
-fn processes() -> Vec<(i32, i32, String)> {
+/// Every process as (pid, parent, state, command name). Command arguments are never read:
+/// they can hold secrets. Linux reads /proc (minimal systems have no ps); macOS uses ps.
+fn processes() -> Vec<(i32, i32, String, String)> {
     let mut all = Vec::new();
     if cfg!(target_os = "linux") {
         for entry in fs::read_dir("/proc").into_iter().flatten().flatten() {
@@ -226,7 +274,7 @@ fn processes() -> Vec<(i32, i32, String)> {
             let (Some(open), Some(close)) = (stat.find('('), stat.rfind(')')) else { continue };
             let mut f = stat[close + 1..].split_whitespace();
             let (Some(state), Some(ppid)) = (f.next(), f.next().and_then(|p| p.parse().ok())) else { continue };
-            all.push((pid, ppid, format!("{state}\t{}", &stat[open + 1..close])));
+            all.push((pid, ppid, state.to_string(), stat[open + 1..close].to_string()));
         }
     } else if let Ok(out) = Command::new("ps").args(["-A", "-o", "pid=,ppid=,stat=,comm="]).output() {
         for line in String::from_utf8_lossy(&out.stdout).lines() {
@@ -235,23 +283,28 @@ fn processes() -> Vec<(i32, i32, String)> {
                 continue;
             };
             let state = f.next().unwrap_or("?").to_string();
-            all.push((pid, ppid, format!("{state}\t{}", f.collect::<Vec<_>>().join(" "))));
+            all.push((pid, ppid, state, f.collect::<Vec<_>>().join(" ")));
         }
     }
     all
 }
 
-/// pid, parent, state and command name for `root` and every process below it.
+/// pid, parent, state and command name for `root` and every process below it. Each field
+/// is made visible on its own, so a name cannot add columns or lines.
 fn process_tree(root: i32) -> String {
     let mut children: BTreeMap<i32, Vec<i32>> = BTreeMap::new();
     let mut lines: BTreeMap<i32, String> = BTreeMap::new();
-    for (pid, ppid, rest) in processes() {
-        lines.insert(pid, format!("{pid}\t{ppid}\t{}", visible(&rest).replace("\\t", "\t")));
+    for (pid, ppid, state, comm) in processes() {
+        lines.insert(pid, format!("{pid}\t{ppid}\t{}\t{}", visible(&state), visible(&comm)));
         children.entry(ppid).or_default().push(pid);
     }
     let mut out = String::from("pid\tppid\tstate\tcommand\n");
+    let mut seen = BTreeSet::new();
     let mut stack = vec![root];
     while let Some(pid) = stack.pop() {
+        if !seen.insert(pid) {
+            continue;
+        }
         if let Some(l) = lines.get(&pid) {
             out.push_str(l);
             out.push('\n');
@@ -262,12 +315,18 @@ fn process_tree(root: i32) -> String {
 }
 
 /// File names and states of uncommitted changes in each repository (names only, no diffs).
+/// Each line is made visible on its own, so a file name cannot forge lines.
 fn repo_changes(repos: &[PathBuf]) -> String {
     let mut out = String::new();
     for repo in repos {
         out.push_str(&format!("# {}\n", visible(&repo.display().to_string())));
-        match Command::new("git").arg("-C").arg(repo).args(["status", "--porcelain=v1"]).output() {
-            Ok(o) if o.status.success() => out.push_str(&visible(&String::from_utf8_lossy(&o.stdout)).replace("\\n", "\n")),
+        match Command::new("git").arg("-C").arg(repo).args(["status", "--porcelain=v1", "-z"]).output() {
+            Ok(o) if o.status.success() => {
+                for entry in o.stdout.split(|b| *b == 0).filter(|e| !e.is_empty()) {
+                    out.push_str(&visible(&String::from_utf8_lossy(entry)));
+                    out.push('\n');
+                }
+            }
             _ => out.push_str("git status unavailable\n"),
         }
     }
@@ -281,35 +340,53 @@ unsafe extern "C" {
 const SIGSTOP: i32 = 17;
 #[cfg(not(target_os = "macos"))]
 const SIGSTOP: i32 = 19;
+const EPERM: i32 = 1;
 
 /// Stop `pid` (it can be resumed with `kill -CONT`).
 pub fn pause(pid: i32) -> io::Result<()> {
     if unsafe { kill(pid, SIGSTOP) } == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
 }
 
+/// Whether `pid` exists. EPERM means it exists but belongs to another user.
 pub fn alive(pid: i32) -> bool {
-    unsafe { kill(pid, 0) == 0 }
+    let exists = unsafe { kill(pid, 0) } == 0;
+    exists || io::Error::last_os_error().raw_os_error() == Some(EPERM)
 }
 
 /// Reads complete lines appended to a file since the last call.
 pub struct Follower {
+    path: PathBuf,
     file: fs::File,
+    id: (u64, u64),
     pos: u64,
-    partial: String,
+    partial: Vec<u8>,
 }
 
 impl Follower {
     /// Start at the end: what is already in the file is history, not new activity.
     pub fn at_end(path: &Path) -> io::Result<Self> {
         let file = crate::safe::open_regular(path)?;
-        let pos = file.metadata()?.len();
-        Ok(Follower { file, pos, partial: String::new() })
+        let m = file.metadata()?;
+        Ok(Follower { path: path.to_path_buf(), id: (m.dev(), m.ino()), pos: m.len(), file, partial: Vec::new() })
     }
 
+    /// New complete lines (without their newline). Bytes are kept until a line is complete,
+    /// so a character split across two reads is decoded whole. If the path now names a
+    /// different file (replaced by rename) or the file shrank (truncated), reading starts
+    /// again from the beginning of what is there now.
     pub fn new_lines(&mut self) -> io::Result<Vec<String>> {
+        if let Ok(m) = fs::metadata(&self.path) {
+            if (m.dev(), m.ino()) != self.id {
+                if let Ok(file) = crate::safe::open_regular(&self.path) {
+                    self.file = file;
+                    self.id = (m.dev(), m.ino());
+                    self.pos = 0;
+                    self.partial.clear();
+                }
+            }
+        }
         let len = self.file.metadata()?.len();
         if len < self.pos {
-            // Truncated or replaced: start again from the beginning of what is there now.
             self.pos = 0;
             self.partial.clear();
         }
@@ -317,22 +394,25 @@ impl Follower {
             return Ok(Vec::new());
         }
         self.file.seek(SeekFrom::Start(self.pos))?;
-        let mut buf = Vec::new();
-        (&mut self.file).take(len - self.pos).read_to_end(&mut buf)?;
+        (&mut self.file).take(len - self.pos).read_to_end(&mut self.partial)?;
         self.pos = len;
-        self.partial.push_str(&String::from_utf8_lossy(&buf));
-        let mut lines: Vec<String> = self.partial.split('\n').map(str::to_string).collect();
-        self.partial = lines.pop().unwrap_or_default();
-        Ok(lines.into_iter().filter(|l| !l.trim().is_empty()).collect())
+        let mut lines = Vec::new();
+        while let Some(i) = self.partial.iter().position(|b| *b == b'\n') {
+            let line: Vec<u8> = self.partial.drain(..=i).collect();
+            lines.push(String::from_utf8_lossy(&line[..i]).into_owned());
+        }
+        Ok(lines)
     }
 }
 
-/// Whether existing transcript content looks like a supported format: true if empty,
-/// or if any of the first lines is a recognised record.
+/// Whether the transcript looks like a supported format: true if it has no complete line
+/// yet (a first line still being written is not evidence either way), or if any of its
+/// first complete lines is a recognised record.
 pub fn recognised_format(path: &Path) -> io::Result<bool> {
     let (raw, _) = crate::safe::read_capped(path, 4 << 20)?;
-    let text = String::from_utf8_lossy(&raw);
-    let mut d = Detector::new(DEFAULTS);
+    let Some(end) = raw.iter().rposition(|b| *b == b'\n') else { return Ok(true) };
+    let text = String::from_utf8_lossy(&raw[..end]);
+    let mut d = Detector::new(DEFAULTS, 0);
     let mut any = false;
     for line in text.lines().filter(|l| !l.trim().is_empty()).take(500) {
         any = true;

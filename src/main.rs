@@ -113,6 +113,7 @@ fn parse_args(command: &str, args: &[String]) -> Result<Args, String> {
         pause: false,
     };
     let mut it = args.iter();
+    let mut seen = std::collections::BTreeSet::new();
     while let Some(arg) = it.next() {
         let mut value = || match it.next() {
             Some(v) if !v.starts_with("--") => Ok(PathBuf::from(v)),
@@ -135,6 +136,9 @@ fn parse_args(command: &str, args: &[String]) -> Result<Args, String> {
                 a.out = Some(value()?);
             }
             ("--loop" | "--spike" | "--failures" | "--pid", "watch") => {
+                if !seen.insert(arg.clone()) {
+                    return Err(format!("{arg} given twice"));
+                }
                 let n: u64 = value()?.to_str().and_then(|v| v.parse().ok()).filter(|n| *n > 0).ok_or(format!("{arg} needs a positive number"))?;
                 match arg.as_str() {
                     "--loop" => a.thresholds.repeats = n,
@@ -160,6 +164,9 @@ fn parse_args(command: &str, args: &[String]) -> Result<Args, String> {
     }
     if a.pause && a.pid.is_none() {
         return Err("--pause needs --pid".into());
+    }
+    if a.pause && a.once_scan {
+        return Err("--pause cannot be used with --once: a scan of past activity must not stop a live process".into());
     }
     if command == "persist" && a.strict && a.since.is_none() {
         return Err("--strict needs --since".into());
@@ -190,12 +197,7 @@ fn print_text(findings: &[Finding], chain: &[(u32, String)]) {
 }
 
 fn esc(s: &str) -> String {
-    s.chars().flat_map(|c| match c {
-        '"' => "\\\"".chars().collect::<Vec<_>>(),
-        '\\' => "\\\\".chars().collect(),
-        c if (c as u32) < 0x20 => format!("\\u{:04x}", c as u32).chars().collect(),
-        c => vec![c],
-    }).collect()
+    glassbox::safe::json_escape(s)
 }
 
 fn print_json(findings: &[Finding], chain: &[(u32, String)]) {
@@ -325,8 +327,8 @@ fn run_watch(home: &Path, a: &Args) -> ExitCode {
         }
     }
     let t = &a.thresholds;
-    let thresholds = watch::Thresholds { repeats: t.repeats, spike: t.spike, failures: t.failures };
-    let mut detector = Detector::new(thresholds);
+    let lines_before = if a.once_scan { 0 } else { watch::line_count(&path).unwrap_or(0) };
+    let mut detector = Detector::new(*t, lines_before);
     let mut seq = 0u64;
     let mut fired_any = false;
     let mut handle = |trigger: watch::Trigger, ctx: &Context, out: Option<&Path>| {
@@ -350,18 +352,15 @@ fn run_watch(home: &Path, a: &Args) -> ExitCode {
     };
 
     if a.once_scan {
-        let text = match glassbox::safe::read_capped(&path, u64::MAX) {
-            Ok((raw, _)) => String::from_utf8_lossy(&raw).into_owned(),
-            Err(e) => {
-                eprintln!("cannot read {}: {e}", path.display());
-                return ExitCode::from(2);
-            }
-        };
         let ctx = Context { transcript: &path, home, repos: &a.repos, pid: a.pid, baseline: None };
-        for line in text.lines() {
+        let scanned = watch::for_each_line(&path, |line| {
             for trigger in detector.feed(line) {
                 handle(trigger, &ctx, a.out.as_deref());
             }
+        });
+        if let Err(e) = scanned {
+            eprintln!("cannot read {}: {e}", path.display());
+            return ExitCode::from(2);
         }
         return if fired_any { ExitCode::from(1) } else { ExitCode::SUCCESS };
     }

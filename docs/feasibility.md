@@ -192,3 +192,19 @@ A trigger of four identical calls in a row would have fired zero times on this r
 **Peer-reviewed and preprint grounding.** ReliabilityBench ([arXiv:2601.06112](https://arxiv.org/abs/2601.06112)) injects timeouts, rate limits, partial responses and schema drift and reports that single-run pass rates overstate reliability by 20 to 40 percent. *Loud Failures, Quiet Failures* ([arXiv:2610.10062](https://arxiv.org/abs/2610.10062)) injects typed tool faults into multi-turn tool use. *When Tools Fail, Agents Fabricate* ([NeurIPS 2026](https://neurips.cc/virtual/2026/173038)) reports 27 to 54 percent correct recovery and 19 to 30 percent confident fabrication across 2,100 fault-fired runs. *The Scaling Paradox of Tool-Calling LLM Agents Under Realistic MCP Faults* ([NeurIPS 2026](https://neurips.cc/virtual/2026/poster/151564)) introduces MCP-Injector for permanent, transient and intermittent MCP faults.
 
 **Verdict: SKIP; adopt.** Both layers already have tools, and the research shows how to use them. Use llmposter or MockServer for model-API faults and an MCP fault proxy for tool faults when testing agent tooling. One narrow gap remains in the search results (rewriting tool-call arguments in model responses), which ChaosLLM's malformed-JSON mode partly covers; it does not justify a new tool.
+
+---
+
+# Follow-up: GPU memory for `models`
+
+Checked on 2026-11-20. The first round's verdict for model residency included reporting "server state". After `models` shipped with page-cache residency, the remaining question was whether glassbox should also report a loaded model's GPU memory.
+
+| Source | What it exposes | Already shown by |
+|---|---|---|
+| Ollama `GET /api/ps` ([API docs](https://github.com/ollama/ollama/blob/main/docs/api.md)) | Each loaded model's `size` and `size_vram` | `ollama ps`, whose PROCESSOR column gives the GPU and CPU split |
+| LM Studio `GET /api/v0/models` ([REST docs](https://lmstudio.ai/docs/developer/rest/endpoints)) | `state` per model; no size or memory field | `lms ps` |
+| macOS `IOAccelerator` registry (`ioreg -r -c IOAccelerator`) | GPU memory for the whole system (`In use system memory`) | Activity Monitor; not attributable to a model |
+
+On Apple silicon, the GPU memory used by one model in one process is not available without private interfaces or root. The per-model figures that do exist come from each server's own API, and each server's CLI already prints them.
+
+**Verdict: SKIP.** Reporting GPU memory would re-display `ollama ps` and `lms ps`. `models` keeps measuring the page cache, which no server reports, and its documentation points to the server's own status for loaded models.

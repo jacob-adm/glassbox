@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 - 2026-11-20
 
 - `persist` (macOS): watches login items and background services registered through the
   Service Management framework: launchd plists and login-item helpers inside app bundles in

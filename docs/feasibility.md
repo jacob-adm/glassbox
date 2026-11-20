@@ -293,3 +293,49 @@ Claude Code's [default permission mode](https://code.claude.com/docs/en/permissi
 - Prior-art search used web search and GitHub, then each verdict-deciding claim was checked against the project's own README or the vendor's documentation.
 - Searches found no tool that probes provider limits by load, and no maintained, widely used review-before-write gate. Absence of evidence is limited to those searches.
 - Only the egress feasibility check was run, and only on macOS. The Linux path is from the `proc(5)` interface, not yet exercised.
+
+---
+
+# Fourth round: inference placement and benchmark hygiene
+
+The two Track C concepts from `docs/suite-study.md` not checked in earlier rounds, checked on 2026-11-20. Stars, licences and last push dates come from the GitHub API that day. llama.cpp claims come from its documentation and source at commit `374d90a9`.
+
+| Concept | Inspired by | Verdict | One-line reason |
+|---|---|---|---|
+| Placement | Coreinfo | **SKIP** | macOS shows the core layout through `sysctl` but does not let a program pin threads to cores. Linux has `lscpu`, `taskset` and `numactl`, and llama.cpp takes a CPU mask and a NUMA mode itself. |
+| Benchmark hygiene | CPUSTRES, Clockres | **SKIP; adopt** | `llama-bench` repeats each test and reports the mean and standard deviation. hyperfine flags outliers, and stress-ng supplies controlled background load. Timer resolution is far below token latency. |
+
+## Placement: "run inference threads on the right cores"
+
+| Platform | See the layout | Control placement |
+|---|---|---|
+| macOS | `sysctl hw.nperflevels hw.perflevel0.name hw.perflevel0.logicalcpu` (and `perflevel1`) lists performance and efficiency cores with their caches | No thread pinning. `taskpolicy -c` and `-b` only lower a process's scheduling class; the scheduler chooses the cores |
+| Linux | `lscpu`, and `lstopo` from [open-mpi/hwloc](https://github.com/open-mpi/hwloc) (746 stars, BSD-3-Clause, 2026-11-20) | `taskset -c`, `numactl --cpunodebind --membind` |
+| llama.cpp | `llama-bench` records the CPU in `cpu_info` | [`llama-server`](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md) and [`llama-bench`](https://github.com/ggml-org/llama.cpp/blob/master/tools/llama-bench/README.md) take `-C/--cpu-mask`, `--cpu-strict`, `--prio` and `--numa distribute\|isolate\|numactl` |
+
+**Checked on a macOS test machine (Apple silicon, performance and efficiency cores).** `sysctl` reported both core types with their L2 cache sizes. `thread_policy_set` with `THREAD_AFFINITY_POLICY` returned `KERN_NOT_SUPPORTED` (46). The SDK header calls that policy experimental and a hint even where it works. llama.cpp's CPU backend agrees: its Apple implementation of `ggml_thread_apply_affinity` does nothing and is commented "Not supported on Apple platforms", so `--cpu-mask` has no effect on macOS.
+
+**Checked on Linux (Debian 11 container).** `lscpu` printed the topology, and `taskset -c 0` restricted the process to CPU 0, as shown by `Cpus_allowed_list` in `/proc/self/status`. `numactl` and `hwloc` are separate packages.
+
+**Verdict: SKIP.** On Linux, existing commands show the layout and control placement, and llama.cpp applies a mask itself. On macOS, a program cannot pin threads to cores, so there is nothing for a tool to control, and `sysctl` already shows the layout.
+
+## Benchmark hygiene: "does the number hold when the machine is busy?"
+
+| Project | Stars | Licence | Last push | Covers |
+|---|---|---|---|---|
+| [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) `llama-bench` | 135,842 | MIT | 2026-11-20 | `-r` repetitions (default 5), mean and standard deviation per test, each sample in JSON output, `--delay` between tests, `--prio` |
+| [sharkdp/hyperfine](https://github.com/sharkdp/hyperfine) | 29,307 | Apache-2.0 | 2026-11-01 | Repeated runs with statistics, warmup and prepare commands, and outlier detection that warns of interference from other programs and caching |
+| [ColinIanKing/stress-ng](https://github.com/ColinIanKing/stress-ng) | 2,827 | GPL-2.0 | 2026-11-20 | Controlled CPU, memory and I/O load; builds on Linux and macOS |
+| [vllm-project/guidellm](https://github.com/vllm-project/guidellm) | 1,799 | Apache-2.0 | 2026-11-20 | Load testing of model servers (covered in round 1) |
+
+To check that a result holds under load, run `llama-bench` or `guidellm` once on an idle machine and once beside `stress-ng --cpu N`, and compare the means against their standard deviations.
+
+**Timer resolution, checked on the same macOS machine.** `mach_timebase_info` is 125/3, and the smallest observed step of `mach_absolute_time` was 41 ns. `clock_getres` reported 42 ns for `CLOCK_UPTIME_RAW` and 1 µs for `CLOCK_MONOTONIC`. Token latencies are measured in milliseconds, at least a thousand times coarser, so timer granularity does not limit an inference benchmark. Clockres's concern does not carry over.
+
+**Verdict: SKIP; adopt.** Use `llama-bench` or `guidellm` for repeated measurements with spread, hyperfine for command-level timing, and stress-ng for background load.
+
+## Method and limits (fourth round)
+
+- macOS checks ran on one Apple silicon machine. Intel Macs were not tested.
+- The Linux check ran in a container with one NUMA node, so `numactl` binding was not exercised on multi-node hardware.
+- Placement's effect on inference speed was not measured, because neither verdict depends on it.

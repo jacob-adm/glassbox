@@ -175,6 +175,6 @@ Concept value: **H** high, **M** medium, **L** low, **–** none for agent tooli
 4. **Hidden-content scanner** (Track B). New code with no port needed, and it is the strongest agent-tooling concept.
 5. **AccessChk** port, then the remaining Track B concepts as agent-tooling features.
 
-Every Track A port and Track B concept now has a verdict in `docs/feasibility.md` (three rounds and a follow-up, 2026-11-19 and 2026-11-20). Track C placement and benchmark hygiene are not yet checked.
+Every Track A port, Track B concept and Track C concept now has a verdict in `docs/feasibility.md` (four rounds and a follow-up, 2026-11-19 and 2026-11-20).
 
 Every item starts from lawful sources only (section 1) and has a failing test against real OS state before its implementation.

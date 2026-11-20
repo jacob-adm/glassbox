@@ -139,3 +139,60 @@ fn snapshot_of_missing_file_is_a_usage_error() {
     let out = glassbox(&["--since", home.join("absent.snapshot").to_str().unwrap()], &home);
     assert_eq!(out.status.code(), Some(2));
 }
+
+/// An app bundle's own launchd plists and login-item helpers, registered with SMAppService.
+#[cfg(target_os = "macos")]
+#[test]
+fn app_bundled_background_services_and_login_items_are_watched() {
+    let home = scratch("app-bundle");
+    fs::create_dir_all(home.join("Applications/Existing.app/Contents")).unwrap();
+    let snap = save(&home);
+    let lib = home.join("Applications/Fake.app/Contents/Library");
+    for (rel, body) in [
+        ("LaunchAgents/com.example.helper.plist", "agent"),
+        ("LaunchDaemons/com.example.daemon.plist", "daemon"),
+        ("LoginItems/Helper.app/Contents/Info.plist", "helper"),
+    ] {
+        fs::create_dir_all(lib.join(rel).parent().unwrap()).unwrap();
+        fs::write(lib.join(rel), body).unwrap();
+    }
+    let (code, json) = since(&home, &snap);
+    assert_eq!(code, 1, "{json}");
+    let base = "~/Applications/Fake.app/Contents/Library";
+    for (cat, rel) in [
+        ("autostart", "LaunchAgents/com.example.helper.plist"),
+        ("system service", "LaunchDaemons/com.example.daemon.plist"),
+        ("login items", "LoginItems/Helper.app/Contents/Info.plist"),
+    ] {
+        assert!(json.contains(&format!("\"change\":\"added\",\"category\":\"{cat}\",\"path\":\"{base}/{rel}\"")), "{json}");
+    }
+}
+
+/// A symlink named like an app bundle is not followed: it could point anywhere on disk.
+#[cfg(target_os = "macos")]
+#[test]
+fn symlinked_app_bundle_is_not_followed() {
+    let home = scratch("app-symlink");
+    let target = scratch("app-symlink-target");
+    fs::create_dir_all(target.join("Contents/Library/LaunchAgents")).unwrap();
+    fs::write(target.join("Contents/Library/LaunchAgents/x.plist"), "x").unwrap();
+    fs::create_dir_all(home.join("Applications")).unwrap();
+    std::os::unix::fs::symlink(&target, home.join("Applications/Link.app")).unwrap();
+    let out = glassbox(&["--json"], &home);
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("Link.app"));
+}
+
+/// The Background Task Management database records every registration and approval.
+#[cfg(target_os = "macos")]
+#[test]
+fn background_task_database_is_hashed_when_readable() {
+    let dir = Path::new("/private/var/db/com.apple.backgroundtaskmanagement");
+    let readable: Vec<String> = fs::read_dir(dir)
+        .map(|it| it.flatten().filter(|e| fs::File::open(e.path()).is_ok()).map(|e| e.path().display().to_string()).collect())
+        .unwrap_or_default();
+    let home = scratch("btm");
+    let out = String::from_utf8(glassbox(&["--json"], &home).stdout).unwrap();
+    for path in readable {
+        assert!(out.contains(&format!("\"category\":\"login items\",\"path\":\"{path}\"")), "{path} missing: {out}");
+    }
+}

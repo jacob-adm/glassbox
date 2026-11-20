@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- `persist` (macOS): watches login items and background services registered through the
+  Service Management framework: launchd plists and login-item helpers inside app bundles in
+  `/Applications` and `~/Applications`, and the Background Task Management database.
+
 ## 0.2.0 - 2026-11-19
 
 - `watch`: follows a local agent session transcript (Claude Code JSON lines) and, when the agent

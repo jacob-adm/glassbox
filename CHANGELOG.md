@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 - 2026-11-20
 
 - `watch`: with `--pid`, each capture adds `connections.txt`, the open TCP and UDP connections
   of the agent's process tree when the capture was written. Read as the same user, with no extra

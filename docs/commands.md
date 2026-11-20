@@ -153,7 +153,7 @@ Models are sorted by bytes in memory, then name.
 
 - Page cache only. A model already loaded by a running server (Ollama, LM Studio, llama.cpp) may hold
   its weights in GPU or other anonymous memory, which is not counted. Use the server's own status
-  (for example `ollama ps`) for that.
+  (`ollama ps`, `lms ps`) for that.
 - Only `.gguf` and `.safetensors` files are counted; PyTorch `.bin` checkpoints are not.
 - Only the ranges of a file that hold data are measured (`SEEK_DATA`/`SEEK_HOLE`); holes in a sparse
   file are skipped. Model files are not sparse, so this changes nothing for them, and a huge sparse

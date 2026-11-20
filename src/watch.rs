@@ -242,7 +242,9 @@ pub fn capture(out: &Path, seq: u64, trigger: &Trigger, ctx: &Context) -> io::Re
         f.write_all(text.as_bytes())
     };
     if let Some(pid) = ctx.pid {
-        write_new("processes.txt", &process_tree(pid))?;
+        let (tree, pids) = process_tree(pid);
+        write_new("processes.txt", &tree)?;
+        write_new("connections.txt", &connections(pid, &pids))?;
     }
     if !ctx.repos.is_empty() {
         write_new("repos.txt", &repo_changes(ctx.repos))?;
@@ -291,7 +293,7 @@ fn processes() -> Vec<(i32, i32, String, String)> {
 
 /// pid, parent, state and command name for `root` and every process below it. Each field
 /// is made visible on its own, so a name cannot add columns or lines.
-fn process_tree(root: i32) -> String {
+fn process_tree(root: i32) -> (String, Vec<i32>) {
     let mut children: BTreeMap<i32, Vec<i32>> = BTreeMap::new();
     let mut lines: BTreeMap<i32, String> = BTreeMap::new();
     for (pid, ppid, state, comm) in processes() {
@@ -311,7 +313,128 @@ fn process_tree(root: i32) -> String {
         }
         stack.extend(children.get(&pid).into_iter().flatten().copied());
     }
+    (out, seen.into_iter().collect())
+}
+
+const CONNECTIONS_NOTE: &str = "# Open connections of the process tree when this capture was written. A point-in-time list: \
+connections that opened and closed earlier are not shown.\n";
+
+/// Open TCP and UDP sockets of `pids`, one per line: pid, protocol, local, remote, state.
+/// Read as the same user, with no extra privileges. Each field is made visible on its own.
+fn connections(root: i32, pids: &[i32]) -> String {
+    let mut out = String::from(CONNECTIONS_NOTE);
+    let rows = if cfg!(target_os = "linux") { proc_sockets(root, pids) } else { lsof_sockets(pids) };
+    match rows {
+        Ok(rows) => {
+            out.push_str("pid\tprotocol\tlocal\tremote\tstate\n");
+            for (pid, proto, local, remote, state) in rows {
+                out.push_str(&format!("{pid}\t{}\t{}\t{}\t{}\n", visible(&proto), visible(&local), visible(&remote), visible(&state)));
+            }
+        }
+        Err(why) => out.push_str(&format!("# unavailable: {}\n", visible(&why))),
+    }
     out
+}
+
+type Socket = (i32, String, String, String, String);
+
+/// macOS and other Unix systems: `lsof` field output (-F), so names cannot shift columns.
+fn lsof_sockets(pids: &[i32]) -> Result<Vec<Socket>, String> {
+    let list = pids.iter().map(i32::to_string).collect::<Vec<_>>().join(",");
+    let out = Command::new("lsof").args(["-nP", "-w", "-a", "-i", "-p", &list, "-F", "pfPnT"]).output().map_err(|e| format!("lsof: {e}"))?;
+    let mut rows = Vec::new();
+    let mut pid = 0;
+    let mut cur: Option<Socket> = None;
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let (tag, val) = line.split_at(line.len().min(1));
+        match tag {
+            "p" => {
+                rows.extend(cur.take());
+                pid = val.parse().unwrap_or(0);
+            }
+            "f" => {
+                rows.extend(cur.take());
+                cur = Some((pid, String::new(), String::new(), String::new(), String::new()));
+            }
+            "P" => cur.iter_mut().for_each(|c| c.1 = val.to_string()),
+            "n" => cur.iter_mut().for_each(|c| {
+                let (l, r) = val.split_once("->").unwrap_or((val, ""));
+                (c.2, c.3) = (l.to_string(), r.to_string());
+            }),
+            "T" => {
+                if let Some(st) = val.strip_prefix("ST=") {
+                    cur.iter_mut().for_each(|c| c.4 = st.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    rows.extend(cur);
+    Ok(rows)
+}
+
+/// Linux: socket inodes from /proc/<pid>/fd, matched against the root's network namespace tables.
+fn proc_sockets(root: i32, pids: &[i32]) -> Result<Vec<Socket>, String> {
+    let mut owner: BTreeMap<u64, i32> = BTreeMap::new();
+    for &pid in pids {
+        for fd in fs::read_dir(format!("/proc/{pid}/fd")).into_iter().flatten().flatten() {
+            let Ok(target) = fs::read_link(fd.path()) else { continue };
+            let t = target.to_string_lossy();
+            if let Some(inode) = t.strip_prefix("socket:[").and_then(|r| r.strip_suffix(']')).and_then(|n| n.parse().ok()) {
+                owner.entry(inode).or_insert(pid);
+            }
+        }
+    }
+    let mut rows = Vec::new();
+    for (file, proto, v6) in [("tcp", "TCP", false), ("tcp6", "TCP", true), ("udp", "UDP", false), ("udp6", "UDP", true)] {
+        let Ok(table) = fs::read_to_string(format!("/proc/{root}/net/{file}")) else { continue };
+        for line in table.lines().skip(1) {
+            let f: Vec<&str> = line.split_whitespace().collect();
+            let (Some(l), Some(r), Some(st), Some(inode)) = (f.get(1), f.get(2), f.get(3), f.get(9).and_then(|n| n.parse::<u64>().ok())) else { continue };
+            let Some(&pid) = owner.get(&inode) else { continue };
+            let state = if proto == "TCP" { tcp_state(st) } else if r.ends_with(":0000") { "" } else { "CONNECTED" };
+            rows.push((pid, proto.to_string(), proc_addr(l, v6), if r.ends_with(":0000") { String::new() } else { proc_addr(r, v6) }, state.to_string()));
+        }
+    }
+    if owner.is_empty() && !Path::new(&format!("/proc/{root}/fd")).exists() {
+        return Err(format!("/proc/{root}/fd not readable"));
+    }
+    Ok(rows)
+}
+
+/// "0100007F:1F90" -> "127.0.0.1:8080"; IPv6 as "[::1]:8080". Each 32-bit word is host order.
+fn proc_addr(hex: &str, v6: bool) -> String {
+    let Some((addr, port)) = hex.split_once(':') else { return visible(hex) };
+    let port = u16::from_str_radix(port, 16).unwrap_or(0);
+    let words: Vec<u32> = (0..addr.len() / 8).filter_map(|i| u32::from_str_radix(&addr[i * 8..i * 8 + 8], 16).ok()).collect();
+    if v6 && words.len() == 4 {
+        let mut b = [0u8; 16];
+        for (i, w) in words.iter().enumerate() {
+            b[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+        }
+        format!("[{}]:{port}", std::net::Ipv6Addr::from(b))
+    } else if let Some(w) = words.first() {
+        format!("{}:{port}", std::net::Ipv4Addr::from(w.to_le_bytes()))
+    } else {
+        visible(hex)
+    }
+}
+
+fn tcp_state(code: &str) -> &'static str {
+    match code {
+        "01" => "ESTABLISHED",
+        "02" => "SYN_SENT",
+        "03" => "SYN_RECV",
+        "04" => "FIN_WAIT1",
+        "05" => "FIN_WAIT2",
+        "06" => "TIME_WAIT",
+        "07" => "CLOSE",
+        "08" => "CLOSE_WAIT",
+        "09" => "LAST_ACK",
+        "0A" => "LISTEN",
+        "0B" => "CLOSING",
+        _ => "UNKNOWN",
+    }
 }
 
 /// File names and states of uncommitted changes in each repository (names only, no diffs).

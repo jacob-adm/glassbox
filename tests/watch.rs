@@ -303,3 +303,29 @@ fn watch_options_may_be_given_once() {
     let path = transcript(&dir, &repeated(1));
     assert_eq!(once(&[path.to_str().unwrap(), "--loop", "3", "--loop", "4"], &dir).0, 2);
 }
+
+/// The agent's open connections are listed when a trigger fires: here the test process
+/// itself is the agent, holding a real loopback listener and an established connection.
+#[test]
+fn a_capture_lists_the_agents_open_connections() {
+    let (dir, home, out) = (scratch("conns"), scratch("conns-home"), scratch("conns-out"));
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let _client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let _server = listener.accept().unwrap();
+    let pid = std::process::id().to_string();
+    let path = transcript(&dir, &[call(0, "Read", r#"{"file":"a"}"#, 50)]);
+    let mut child = follow(&path, &home, &out, &["--pid", &pid]);
+    let mut f = fs::OpenOptions::new().append(true).open(&path).unwrap();
+    f.write_all((repeated(4).join("\n") + "\n").as_bytes()).unwrap();
+    drop(f);
+    let capture = wait_for_capture(&out);
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let conns = fs::read_to_string(capture.join("connections.txt")).unwrap();
+    assert!(conns.starts_with("# "), "no point-in-time note: {conns}");
+    let rows: Vec<Vec<&str>> = conns.lines().filter(|l| l.starts_with(&format!("{pid}\t"))).map(|l| l.split('\t').collect()).collect();
+    let local = format!("127.0.0.1:{port}");
+    assert!(rows.iter().any(|r| r[1] == "TCP" && r[2] == local && r[4] == "LISTEN"), "{conns}");
+    assert!(rows.iter().any(|r| r[1] == "TCP" && r[3] == local && r[4] == "ESTABLISHED"), "{conns}");
+}

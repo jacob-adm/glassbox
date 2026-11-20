@@ -286,7 +286,7 @@ Follows a local agent session and captures the machine's state when the agent go
 | `--loop N` | Identical tool calls (same tool, same arguments) in a row that count as a loop (default 4) |
 | `--spike TOKENS` | Output tokens in one assistant turn that count as a spike (default 16000) |
 | `--failures N` | Failed tool calls in a row (default 5) |
-| `--pid PID` | The agent's process: its process tree goes into each capture, and watching stops when it exits |
+| `--pid PID` | The agent's process: its process tree and their open connections go into each capture, and watching stops when it exits |
 | `--pause` | With `--pid`, while following: stop the agent (SIGSTOP) when a trigger fires. Resume it with `kill -CONT PID`. Refused with `--once`, so a scan of past activity never stops a live process |
 | `--repo DIR` | Also watch `DIR`'s persistence points and record its uncommitted changes; repeatable |
 | `--home DIR` | Use `DIR` instead of `$HOME` |
@@ -317,6 +317,7 @@ through a planted link) with:
 | `persist.json` | Persistence points added, changed or removed since watching began (`persist --since` format) |
 | `repos.txt` | `git status --porcelain` for each `--repo`: file names and states, no diffs |
 | `processes.txt` | pid, parent, state and command name for `--pid` and every process below it |
+| `connections.txt` | Open TCP and UDP connections of the same processes when the capture was written: pid, protocol, local and remote address, state. A point-in-time list; connections that opened and closed earlier are missing. Read as the same user (`lsof` on macOS, `/proc` on Linux) |
 
 No message text or tool arguments are copied into a capture or printed.
 

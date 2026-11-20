@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- `watch`: with `--pid`, each capture adds `connections.txt`, the open TCP and UDP connections
+  of the agent's process tree when the capture was written. Read as the same user, with no extra
+  privileges.
+
 ## 0.3.0 - 2026-11-20
 
 - `persist` (macOS): watches login items and background services registered through the

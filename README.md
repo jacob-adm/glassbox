@@ -59,7 +59,7 @@ before an agent session and compare after it to see what was added or changed.
 `glassbox watch` follows a local agent session transcript (Claude Code by default). When the agent
 repeats an identical tool call, produces an unusually long turn, or keeps failing tool calls, it
 writes a capture: the trigger, the persistence points added or changed since watching began, the
-repository's uncommitted changes and the agent's process tree. It can pause the agent so you can look
+repository's uncommitted changes, and the agent's process tree with its open network connections. It can pause the agent so you can look
 before it continues. Transcripts are read for structure only; their content is never copied.
 
 ## Commands

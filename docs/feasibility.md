@@ -208,3 +208,88 @@ Checked on 2026-11-20. The first round's verdict for model residency included re
 On Apple silicon, the GPU memory used by one model in one process is not available without private interfaces or root. The per-model figures that do exist come from each server's own API, and each server's CLI already prints them.
 
 **Verdict: SKIP.** Reporting GPU memory would re-display `ollama ps` and `lms ps`. `models` keeps measuring the page cache, which no server reports, and its documentation points to the server's own status for loaded models.
+
+---
+
+# Third round: the remaining agent-tooling concepts
+
+The six Track B concepts from `docs/suite-study.md` not checked in earlier rounds, checked on 2026-11-20. Stars, licences and last push dates come from the GitHub API that day. Feature claims come from each project's README or documentation, linked in place.
+
+| Concept | Inspired by | Verdict | One-line reason |
+|---|---|---|---|
+| Egress audit | TCPView | **EXTEND (narrow)** | Network monitors exist, but none found lists an agent's connections without root and keeps them with the rest of a capture. `watch` can record the process tree's open connections when it fires. |
+| Provenance check | Sigcheck | **SKIP; adopt** | OpenSSF model signing covers weights. Agent Scan checks skill and MCP content. `persist` already detects skill and config changes between sessions. |
+| Least-privilege identity | AccessChk, ShellRunas | **SKIP; adopt** | SandVault and Hazmat run agents as a dedicated macOS user. `reach` already measures whichever user runs it. |
+| Staged actions | MoveFile, PendMoves | **SKIP** | Claude Code's default mode asks before each edit, and checkpoints undo edits. `persist --since` reviews what changed outside the project. |
+| Empirical limits | Testlimit | **SKIP** | The Anthropic API returns the account's actual limits in every response. Probing would spend quota to learn the same numbers. |
+| Action trace with a stable schema | Procmon, Sysmon | **SKIP; adopt** | OpenTelemetry's GenAI conventions define agent and tool spans, and Claude Code exports tool events over OpenTelemetry. |
+
+## Egress audit: "where did the agent connect?"
+
+| Project | Stars | Licence | Last push | Covers |
+|---|---|---|---|---|
+| [domcyrus/rustnet](https://github.com/domcyrus/rustnet) | 5,247 | Apache-2.0 | 2026-11-19 | Live TCP, UDP and QUIC connections with process attribution; headless JSON snapshots; PCAP export. Packet capture needs platform permissions (macOS PKTAP and BPF access, Linux capabilities) |
+| [objective-see/LuLu](https://github.com/objective-see/LuLu) | 13,626 | GPL-3.0 | 2026-11-02 | macOS per-application firewall: alerts on and blocks outgoing connections |
+| [anthropics/sandbox-runtime](https://github.com/anthropics/sandbox-runtime) | 7,194 | Apache-2.0 | 2026-11-13 | Domain allowlist enforced around an agent process |
+
+**Gap.** Monitors and firewalls cover the machine or an application. None found records the connections of one agent session's process tree without elevated permissions and keeps them alongside the session's other evidence.
+
+**Feasibility, checked on a macOS test machine on 2026-11-20.** As a normal user, `lsof -nP -a -i -p <pid>` listed a running Claude Code process's TCP connections (remote address, port and state). On Linux, `/proc/<pid>/fd` socket inodes joined with `/proc/net/tcp` and `/proc/net/tcp6` give the same for the user's own processes, with no extra tools.
+
+**Limits.** A capture is a point-in-time list. Connections that opened and closed between captures are missed, so the result is evidence, not an audit trail. Use rustnet, LuLu or sandbox-runtime when every connection must be recorded or controlled.
+
+**Verdict: EXTEND (narrow).** Add the open connections of the `--pid` process tree to `watch` captures, labelled as a point-in-time list. No new command.
+
+## Provenance check: "is this the model or skill I approved?"
+
+| Project | Stars | Licence | Last push | Covers |
+|---|---|---|---|---|
+| [sigstore/model-transparency](https://github.com/sigstore/model-transparency) | 249 | Apache-2.0 | 2026-11-09 | `model_signing sign` and `verify` for model directories: Sigstore keyless, PKI or bare keys (OpenSSF Model Signing) |
+| [snyk/agent-scan](https://github.com/snyk/agent-scan) | 3,262 | Apache-2.0 | 2026-11-19 | Discovers installed agents, MCP servers and skills; scans them for prompt injection, data handling and malware patterns |
+| [GautamTalksDev/mcp-pin](https://github.com/GautamTalksDev/mcp-pin) | 4 | MIT | 2026-11-19 | Pins MCP tool definitions by hash and blocks changes; very new |
+
+There is no signing scheme for agent skills to verify against. The useful check, "did this change since I approved it", is what `persist --save` and `persist --since` already do for skills, agent instructions and MCP configuration.
+
+**Verdict: SKIP; adopt.** Use `model_signing verify` for weights, Agent Scan for skill and MCP content, and `persist` for change detection.
+
+## Least-privilege identity: "the agent runs as its own user"
+
+| Project | Stars | Licence | Last push | Covers |
+|---|---|---|---|---|
+| [webcoyote/sandvault](https://github.com/webcoyote/sandvault) | 456 | Apache-2.0 | 2026-11-12 | Runs agents in a limited macOS user account with a shared workspace; includes Claude Code, Codex, Gemini and others |
+| [dredozubov/hazmat](https://github.com/dredozubov/hazmat) | 180 | MIT | 2026-11-14 | Dedicated agent user, per-session Seatbelt policy, `pf` firewall rules and pre-session backups |
+| [nolabs-ai/nono](https://github.com/nolabs-ai/nono) | 5,052 | Apache-2.0 | 2026-11-19 | Same-user sandbox with rollback (covered in round 1) |
+
+`reach` probes as the user that runs it. Run it as the agent's user, for example `sudo -u <agent-user> glassbox reach --home <agent-home>`, to audit that account. This was not tested here because no dedicated agent user exists on the test machine.
+
+**Verdict: SKIP; adopt.** Use SandVault or Hazmat for the identity, and `reach` to audit it.
+
+## Staged actions: "queue changes, apply after approval"
+
+Claude Code's [default permission mode](https://code.claude.com/docs/en/permission-modes) asks before most file edits, shell commands and network actions. [Checkpointing](https://code.claude.com/docs/en/agent-sdk/file-checkpointing) snapshots files before each edit, and `/rewind` restores them, though not for changes made by shell commands or to remote systems. Git worktrees isolate whole sessions. Several projects add review-before-write gates of their own, but none is maintained widely enough to cite as a standard.
+
+**Verdict: SKIP.** Staging is a property of the agent's edit loop, and the agent already provides it. For changes outside the project, which checkpoints do not cover, `persist --since` lists what was added or changed.
+
+## Empirical limits: "probe the real limits instead of trusting the documented ones"
+
+| Source | What it gives |
+|---|---|
+| Anthropic API [rate limit headers](https://platform.claude.com/docs/en/api/rate-limits) | `anthropic-ratelimit-requests-*` and `anthropic-ratelimit-tokens-*` (`-limit`, `-remaining`, `-reset`) on every response, plus `retry-after` on a 429 |
+| [ivanfioravanti/llm_context_benchmarks](https://github.com/ivanfioravanti/llm_context_benchmarks) (107 stars, Apache-2.0, 2026-10-15) | Throughput at increasing context sizes for local and OpenAI-compatible servers |
+
+**Verdict: SKIP.** For hosted APIs, the response headers already report the account's actual limits, so probing would spend quota to rediscover them. For local servers, the context size is a load-time setting, and throughput at each size is already benchmarked.
+
+## Action trace with a stable schema
+
+| Source | What it gives |
+|---|---|
+| [open-telemetry/semantic-conventions-genai](https://github.com/open-telemetry/semantic-conventions-genai) (554 stars, Apache-2.0, 2026-11-20) | `invoke_agent` and `execute_tool` spans with `gen_ai.tool.name`, `gen_ai.tool.call.id` and agent attributes; MCP conventions. Earlier versions live in [open-telemetry/semantic-conventions](https://github.com/open-telemetry/semantic-conventions) (690 stars, Apache-2.0, 2026-11-20) |
+| Claude Code [monitoring](https://code.claude.com/docs/en/monitoring-usage) | OpenTelemetry export, including a `claude_code.tool_result` event per tool call (tool name, tool use ID, success, duration). Arguments such as commands and paths only with `OTEL_LOG_TOOL_DETAILS` |
+
+**Verdict: SKIP; adopt.** A new schema would compete with the one the ecosystem has settled on. Use OpenTelemetry export where an action trace is needed. `watch` stays a trigger on the transcript and does not become a tracer.
+
+## Method and limits (third round)
+
+- Prior-art search used web search and GitHub, then each verdict-deciding claim was checked against the project's own README or the vendor's documentation.
+- Searches found no tool that probes provider limits by load, and no maintained, widely used review-before-write gate. Absence of evidence is limited to those searches.
+- Only the egress feasibility check was run, and only on macOS. The Linux path is from the `proc(5)` interface, not yet exercised.

@@ -64,6 +64,17 @@ const HOME_DIRS: &[(&str, &str)] = &[("autostart", "Library/LaunchAgents"), ("sh
 const SYSTEM_DIRS: &[(&str, &str)] = &[("autostart", "/Library/LaunchAgents"), ("system service", "/Library/LaunchDaemons")];
 #[cfg(target_os = "macos")]
 const SYSTEM_FILES: &[(&str, &str)] = &[];
+/// Background Task Management database (macOS 13+): rewritten when a login item or background
+/// service is registered, approved or removed. `sfltool dumpbtm` (admin) shows its contents.
+#[cfg(target_os = "macos")]
+const BTM_DIR: Option<&str> = Some("/private/var/db/com.apple.backgroundtaskmanagement");
+#[cfg(not(target_os = "macos"))]
+const BTM_DIR: Option<&str> = None;
+/// Folders whose app bundles can carry their own launchd plists and login-item helpers (SMAppService).
+#[cfg(target_os = "macos")]
+const APP_DIRS: &[&str] = &["/Applications", "~/Applications"];
+#[cfg(not(target_os = "macos"))]
+const APP_DIRS: &[&str] = &[];
 #[cfg(target_os = "macos")]
 const PYTHON_SITES: &[&str] = &["Library/Python"];
 
@@ -112,6 +123,12 @@ pub fn collect(home: &Path, repos: &[PathBuf]) -> Vec<Item> {
     }
     for (cat, abs) in SYSTEM_FILES {
         c.file(cat, Path::new(abs));
+    }
+    if let Some(dir) = BTM_DIR {
+        c.dir("login items", Path::new(dir), 0);
+    }
+    for dir in APP_DIRS {
+        c.app_bundles(&dir.strip_prefix("~/").map_or_else(|| PathBuf::from(dir), |rel| home.join(rel)));
     }
     for rel in PYTHON_SITES {
         c.python_startup(&home.join(rel));
@@ -215,6 +232,26 @@ impl Collector<'_> {
             None => format!("unparsed:{}", sha256::hex(text.as_bytes())),
         };
         self.add(category, label, hash);
+    }
+
+    /// Launchd plists and login-item helpers inside each app bundle. Symlinked bundles are skipped.
+    fn app_bundles(&mut self, apps: &Path) {
+        let Ok(entries) = fs::read_dir(apps) else { return };
+        for entry in entries.flatten() {
+            let app = entry.path();
+            if app.extension().is_none_or(|e| e != "app") || !fs::symlink_metadata(&app).is_ok_and(|m| m.is_dir()) {
+                continue;
+            }
+            let lib = app.join("Contents/Library");
+            self.dir("autostart", &lib.join("LaunchAgents"), 0);
+            self.dir("system service", &lib.join("LaunchDaemons"), 0);
+            let Ok(helpers) = fs::read_dir(lib.join("LoginItems")) else { continue };
+            for helper in helpers.flatten() {
+                if fs::symlink_metadata(helper.path()).is_ok_and(|m| m.is_dir()) {
+                    self.file("login items", &helper.path().join("Contents/Info.plist"));
+                }
+            }
+        }
     }
 
     /// `.pth` files and user/site customize modules run on every Python start.

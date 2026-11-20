@@ -184,8 +184,9 @@ SHA-256 of each. Save a snapshot before an agent session and compare with it aft
 
 | Category | macOS | Linux |
 |---|---|---|
-| autostart | `~/Library/LaunchAgents`, `/Library/LaunchAgents` | `~/.config/systemd/user`, `~/.local/share/systemd/user`, `~/.config/autostart`, `/etc/xdg/autostart` |
-| system service | `/Library/LaunchDaemons` | `/etc/systemd/system`, `/etc/rc.local` |
+| autostart | `~/Library/LaunchAgents`, `/Library/LaunchAgents`, `Contents/Library/LaunchAgents` in each app bundle in `/Applications` and `~/Applications` | `~/.config/systemd/user`, `~/.local/share/systemd/user`, `~/.config/autostart`, `/etc/xdg/autostart` |
+| system service | `/Library/LaunchDaemons`, `Contents/Library/LaunchDaemons` in each app bundle | `/etc/systemd/system`, `/etc/rc.local` |
+| login items | the Background Task Management database (`/private/var/db/com.apple.backgroundtaskmanagement`), and `Contents/Info.plist` of each helper in an app bundle's `Contents/Library/LoginItems` | – |
 | cron | `crontab -l` | `crontab -l`, `/etc/crontab`, `/etc/cron.d` |
 | preload | – | `/etc/ld.so.preload` |
 | shell startup | `.zshrc`, `.zprofile`, `.zshenv`, `.zlogin`, `.zlogout`, `.bashrc`, `.bash_profile`, `.bash_login`, `.bash_logout`, `.profile`, fish `config.fish` and `conf.d` | the same, plus `/etc/profile.d` |
@@ -199,6 +200,10 @@ SHA-256 of each. Save a snapshot before an agent session and compare with it aft
 `~/.claude.json` is rewritten with usage data on every session, so only its `mcpServers` and `hooks`
 sections are hashed, at any depth and with keys sorted. Usage counters and key order do not register
 as changes. If the file is not valid JSON, the whole file is hashed.
+
+The Background Task Management database changes when a login item or background service is
+registered, approved or removed. It is compared as a whole; run `sfltool dumpbtm` (administrator)
+to see which item changed. Symlinked app bundles are not followed.
 
 ### Repositories
 

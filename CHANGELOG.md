@@ -7,6 +7,11 @@
   refused. It used to be `readable` whenever the directory itself could be opened, which overstated
   what a sandbox leaves reachable. `--strict` counts `partly-readable` as readable. Entry names are
   never printed or kept.
+- `reach --since FILE`: compares with an earlier `reach --json` report. Changed locations show what
+  they were, and a last line counts what closed, what is still readable and what is newly readable.
+  Meant for checking a sandbox: save a report outside it, compare inside it.
+- `reach`: when the process list cannot be read, as inside a sandbox, the report says the process
+  chain is not available instead of printing an empty heading.
 
 ## 0.4.0 - 2026-11-20
 

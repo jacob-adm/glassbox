@@ -14,6 +14,7 @@ macOS, the privacy grants of the responsible app.
 |---|---|
 | `--json` | Print JSON instead of the text report |
 | `--strict` | Exit 1 if any sensitive location is `readable` or `partly-readable` |
+| `--since FILE` | Compare with an earlier `reach --json` report in `FILE` |
 | `--home DIR` | Resolve locations under `DIR` instead of `$HOME` |
 
 ### What it does to each location
@@ -66,13 +67,39 @@ Absent locations are counted but not listed.
 
 `responsible_app` is `null` when no `.app` bundle is in the chain (always on Linux).
 
+### Checking a sandbox
+
+Save a report from a plain terminal, then run `reach --since` inside the sandbox:
+
+```
+glassbox reach --json > before.json
+SANDBOX-COMMAND glassbox reach --since before.json
+```
+
+Each location whose result changed shows what it was, and a last line counts the locations the
+sandbox closed, those still readable and any newly readable:
+
+```
+! partly-readable      credentials       ~/.ssh  (was readable)
+  denied-privacy       credentials       ~/.config/gcloud  (was readable)
+
+1 sensitive location(s) readable (marked !); 1 partly readable; 11 not present.
+Against the earlier report: 1 closed, 1 still readable, 0 newly readable.
+```
+
+With `--json`, each finding also carries `"was"`. The sandbox must let glassbox read `FILE`. A
+file that is not a `reach --json` report is refused with exit status 2.
+
+Inside a sandbox the process list usually cannot be read. The report then says the process chain
+is not available, and the JSON `chain` is empty.
+
 ### Exit status
 
 | Status | When |
 |---|---|
 | 0 | Report printed. With `--strict`, also: no sensitive location readable |
 | 1 | `--strict` and at least one sensitive location readable |
-| 2 | Usage error, or `HOME` unset without `--home` |
+| 2 | Usage error, `HOME` unset without `--home`, or `--since` given a file that is not a `reach --json` report |
 
 ### Locations
 

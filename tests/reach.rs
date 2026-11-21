@@ -123,3 +123,58 @@ fn strict_fails_when_ssh_keys_are_readable() {
     let (code, _) = run(&home, false);
     assert_eq!(code, 0, "without --strict the report never fails");
 }
+
+fn reach_with(home: &PathBuf, extra: &[&str]) -> (i32, String, String) {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_glassbox"));
+    cmd.arg("reach").arg("--home").arg(home).args(extra);
+    let out = cmd.output().unwrap();
+    (out.status.code().unwrap(), String::from_utf8(out.stdout).unwrap(), String::from_utf8(out.stderr).unwrap())
+}
+
+#[test]
+fn since_reports_what_closed_against_an_earlier_report() {
+    if is_root() {
+        eprintln!("skipped: root bypasses permission bits");
+        return;
+    }
+    let home = scratch("since-home");
+    fs::create_dir(home.join(".ssh")).unwrap();
+    fs::write(home.join(".zsh_history"), "x").unwrap();
+    let saved = scratch("since-report").join("before.json");
+    fs::write(&saved, reach_with(&home, &["--json"]).1).unwrap();
+    let saved = saved.to_str().unwrap();
+
+    let (_, text, _) = reach_with(&home, &["--since", saved]);
+    assert!(text.contains("Against the earlier report: 0 closed, 2 still readable, 0 newly readable."), "{text}");
+    assert!(!text.contains("(was "), "{text}");
+
+    fs::set_permissions(home.join(".ssh"), fs::Permissions::from_mode(0o000)).unwrap();
+    let (code, text, _) = reach_with(&home, &["--since", saved]);
+    let (_, json, _) = reach_with(&home, &["--since", saved, "--json"]);
+    fs::set_permissions(home.join(".ssh"), fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(code, 0);
+    assert!(text.contains("~/.ssh  (was readable)"), "{text}");
+    assert!(text.contains("Against the earlier report: 1 closed, 1 still readable, 0 newly readable."), "{text}");
+    assert!(json.contains("\"path\":\"~/.ssh\",\"reach\":\"denied-permissions\",\"was\":\"readable\""), "{json}");
+}
+
+#[test]
+fn since_refuses_a_file_that_is_not_a_reach_report() {
+    let home = scratch("since-bad-home");
+    let dir = scratch("since-bad");
+    for (name, text) in [("empty.json", ""), ("other.json", "{\"x\":1}"), ("shape.json", "{\"findings\":[{\"path\":1}]}")] {
+        let file = dir.join(name);
+        fs::write(&file, text).unwrap();
+        let (code, out, err) = reach_with(&home, &["--since", file.to_str().unwrap()]);
+        assert_eq!((code, out.as_str()), (2, ""), "{name}");
+        assert!(err.contains("is not a `glassbox reach --json` report"), "{err}");
+    }
+    let (code, _, err) = reach_with(&home, &["--since", dir.join("missing.json").to_str().unwrap()]);
+    assert_eq!(code, 2, "{err}");
+}
+
+#[test]
+fn text_report_names_the_process_chain() {
+    let (_, text, _) = reach_with(&scratch("chain-home"), &[]);
+    assert!(text.starts_with("Process chain (nearest first):\n"), "{text}");
+}

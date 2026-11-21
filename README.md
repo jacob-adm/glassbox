@@ -71,6 +71,7 @@ before it continues. Transcripts are read for structure only; their content is n
 | `glassbox reach` | Report what a process started like this one can read |
 | `glassbox reach --json` | The same report as JSON, for scripts and agent tooling |
 | `glassbox reach --strict` | Exit 1 if any sensitive location is readable |
+| `glassbox reach --since FILE` | Compare with an earlier `reach --json` report, for example one taken outside a sandbox |
 | `glassbox reach --home DIR` | Audit `DIR` instead of `$HOME` |
 | `glassbox models` | List local models and how much of each is in the page cache |
 | `glassbox models --dir DIR` | Also search `DIR` for `.gguf` and `.safetensors` files |

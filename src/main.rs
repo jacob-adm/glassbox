@@ -5,7 +5,7 @@ use glassbox::safe::visible;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: glassbox reach  [--json] [--strict] [--home DIR]
+const USAGE: &str = "usage: glassbox reach  [--json] [--strict] [--since FILE] [--home DIR]
        glassbox models [--json] [--home DIR] [--dir DIR]...
        glassbox persist [--save FILE | --since FILE [--strict]] [--json] [--home DIR] [--repo DIR]...
        glassbox watch [TRANSCRIPT] [--once] [--out DIR] [--loop N] [--spike TOKENS] [--failures N]
@@ -38,7 +38,8 @@ persist Lists persistence points (launch agents, systemd units, cron, shell
   --dir DIR  models: also search DIR for .gguf and .safetensors files
   --repo DIR persist: also watch DIR's git hooks, git config and agent configs
   --save F   persist: write a snapshot to F
-  --since F  persist: compare with the snapshot in F";
+  --since F  persist: compare with the snapshot in F
+             reach: compare with an earlier `reach --json` report in F";
 
 struct Args {
     json: bool,
@@ -84,12 +85,20 @@ fn main() -> ExitCode {
         return run_models(&home, &a);
     }
     let (json, strict) = (a.json, a.strict);
+    let earlier = match a.since.as_deref().map(earlier_reach) {
+        Some(None) => {
+            eprintln!("{} is not a `glassbox reach --json` report", a.since.unwrap_or_default().display());
+            return ExitCode::from(2);
+        }
+        Some(Some(map)) => Some(map),
+        None => None,
+    };
     let findings = reach::audit(&home);
     let chain = reach::parent_chain(std::process::id());
     if json {
-        print_json(&findings, &chain);
+        print_json(&findings, &chain, earlier.as_ref());
     } else {
-        print_text(&findings, &chain);
+        print_text(&findings, &chain, earlier.as_ref());
     }
     let exposed = findings.iter().any(|f| f.location.sensitive && open(f.reach));
     if strict && exposed { ExitCode::from(1) } else { ExitCode::SUCCESS }
@@ -153,7 +162,7 @@ fn parse_args(command: &str, args: &[String]) -> Result<Args, String> {
                 once(&a.save)?;
                 a.save = Some(value()?);
             }
-            ("--since", "persist") => {
+            ("--since", "persist" | "reach") => {
                 once(&a.since)?;
                 a.since = Some(value()?);
             }
@@ -175,6 +184,28 @@ fn parse_args(command: &str, args: &[String]) -> Result<Args, String> {
     Ok(a)
 }
 
+/// Path -> result of every finding in an earlier `reach --json` report.
+fn earlier_reach(file: &Path) -> Option<Earlier> {
+    use glassbox::json::Value;
+    let (text, _) = glassbox::safe::read_capped(file, 4 << 20).ok()?;
+    let Value::Obj(top) = glassbox::json::parse(std::str::from_utf8(&text).ok()?)? else { return None };
+    let Value::Arr(items) = top.get("findings")? else { return None };
+    let mut map = Earlier::new();
+    for item in items {
+        let Value::Obj(o) = item else { return None };
+        let (Some(Value::Str(path)), Some(Value::Str(reach))) = (o.get("path"), o.get("reach")) else { return None };
+        map.insert(path.clone(), reach.clone());
+    }
+    Some(map)
+}
+
+type Earlier = std::collections::BTreeMap<String, String>;
+
+/// A result string that means something at the location can be read.
+fn was_open(reach: &str) -> bool {
+    matches!(reach, "readable" | "partly-readable")
+}
+
 /// Something at the location can be read: all of it, or part of a directory.
 fn open(reach: Reach) -> bool {
     matches!(reach, Reach::Readable | Reach::Partial)
@@ -184,8 +215,12 @@ fn display(f: &Finding) -> String {
     format!("~/{}", f.location.rel)
 }
 
-fn print_text(findings: &[Finding], chain: &[(u32, String)]) {
-    println!("Process chain (nearest first):");
+fn print_text(findings: &[Finding], chain: &[(u32, String)], earlier: Option<&Earlier>) {
+    if chain.is_empty() {
+        println!("Process chain: not available. The process list could not be read, as happens inside a sandbox.");
+    } else {
+        println!("Process chain (nearest first):");
+    }
     for (pid, comm) in chain {
         println!("  {pid:>7}  {}", visible(comm));
     }
@@ -195,7 +230,9 @@ fn print_text(findings: &[Finding], chain: &[(u32, String)]) {
     println!();
     for f in findings.iter().filter(|f| f.reach != Reach::Absent) {
         let flag = if f.location.sensitive && open(f.reach) { "!" } else { " " };
-        println!("{flag} {:<20} {:<17} {}", f.reach.as_str(), f.location.category, display(f));
+        let was = earlier.and_then(|e| e.get(&esc(&display(f)))).filter(|w| **w != f.reach.as_str());
+        let was = was.map_or(String::new(), |w| format!("  (was {})", visible(w)));
+        println!("{flag} {:<20} {:<17} {}{was}", f.reach.as_str(), f.location.category, display(f));
     }
     let readable = findings.iter().filter(|f| f.location.sensitive && open(f.reach)).count();
     let absent = findings.iter().filter(|f| f.reach == Reach::Absent).count();
@@ -208,20 +245,29 @@ fn print_text(findings: &[Finding], chain: &[(u32, String)]) {
         extra += &format!("; {} listable only", count(Reach::Listable));
     }
     println!("\n{readable} sensitive location(s) readable (marked !){extra}; {absent} not present.");
+    if let Some(e) = earlier {
+        let before = |f: &&Finding| e.get(&esc(&display(f))).is_some_and(|w| was_open(w));
+        let closed = findings.iter().filter(|f| before(f) && !open(f.reach)).count();
+        let still = findings.iter().filter(|f| before(f) && open(f.reach)).count();
+        let newly = findings.iter().filter(|f| !before(f) && open(f.reach)).count();
+        println!("Against the earlier report: {closed} closed, {still} still readable, {newly} newly readable.");
+    }
 }
 
 fn esc(s: &str) -> String {
     glassbox::safe::json_escape(s)
 }
 
-fn print_json(findings: &[Finding], chain: &[(u32, String)]) {
+fn print_json(findings: &[Finding], chain: &[(u32, String)], earlier: Option<&Earlier>) {
     let app = reach::responsible_app(chain).map_or("null".into(), |a| format!("\"{}\"", esc(&a)));
     let chain: Vec<String> = chain.iter().map(|(p, c)| format!("{{\"pid\":{p},\"command\":\"{}\"}}", esc(c))).collect();
     let items: Vec<String> = findings
         .iter()
         .map(|f| {
+            let was = earlier.and_then(|e| e.get(&esc(&display(f))));
+            let was = was.map_or(String::new(), |w| format!(",\"was\":\"{w}\""));
             format!(
-                "{{\"category\":\"{}\",\"sensitive\":{},\"path\":\"{}\",\"reach\":\"{}\"}}",
+                "{{\"category\":\"{}\",\"sensitive\":{},\"path\":\"{}\",\"reach\":\"{}\"{was}}}",
                 esc(f.location.category), f.location.sensitive, esc(&display(f)), f.reach.as_str()
             )
         })

@@ -99,8 +99,7 @@ is not available, and the JSON `chain` is empty.
 |---|---|
 | 0 | Report printed. With `--strict`, also: no sensitive location readable |
 | 1 | `--strict` and at least one sensitive location readable |
-| 2 | Usage error, or `--since` given a file that is not a `reach --json` report |
-| 2 | Usage error, or `HOME` unset without `--home` |
+| 2 | Usage error, `HOME` unset without `--home`, or `--since` given a file that is not a `reach --json` report |
 
 ### Locations
 

@@ -139,3 +139,12 @@ fn unknown_and_missing_arguments_are_usage_errors() {
         assert_eq!(out.status.code(), Some(2), "{args:?} must be a usage error");
     }
 }
+
+#[test]
+fn version_prints_the_package_version() {
+    let out = Command::new(env!("CARGO_BIN_EXE_glassbox")).arg("--version").output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), format!("glassbox {}\n", env!("CARGO_PKG_VERSION")));
+    let extra = Command::new(env!("CARGO_BIN_EXE_glassbox")).args(["--version", "--json"]).output().unwrap();
+    assert_eq!(extra.status.code(), Some(2), "--version takes no other argument");
+}

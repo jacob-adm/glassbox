@@ -83,6 +83,7 @@ before it continues. Transcripts are read for structure only; their content is n
 | `glassbox watch --pid PID --pause` | Also stop the agent process when a trigger fires |
 | `glassbox watch TRANSCRIPT --once` | Scan a whole transcript; exit 1 if any trigger fires |
 | `glassbox persist --repo DIR` | Also watch a repository's git hooks, git config and agent configs |
+| `glassbox --version` | Print the version |
 
 See [Commands](docs/commands.md) for the full output, exit status and location list.
 

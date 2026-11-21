@@ -21,7 +21,8 @@ watch   Follows a local agent session transcript (default: the newest Claude Cod
         is never copied.
 reach   Reports what a process started like this one (for example an agent
         launched from this terminal) could read. Opens each location
-        read-only; never reads contents, never lists directories, never writes.
+        read-only; never reads contents, never prints what a directory holds,
+        never writes.
 models  Lists local model weight files (Ollama, LM Studio, Hugging Face cache,
         --dir) and how many bytes of each are in the page cache. Measuring
         does not load the files.
@@ -90,7 +91,7 @@ fn main() -> ExitCode {
     } else {
         print_text(&findings, &chain);
     }
-    let exposed = findings.iter().any(|f| f.location.sensitive && f.reach == Reach::Readable);
+    let exposed = findings.iter().any(|f| f.location.sensitive && open(f.reach));
     if strict && exposed { ExitCode::from(1) } else { ExitCode::SUCCESS }
 }
 
@@ -174,6 +175,11 @@ fn parse_args(command: &str, args: &[String]) -> Result<Args, String> {
     Ok(a)
 }
 
+/// Something at the location can be read: all of it, or part of a directory.
+fn open(reach: Reach) -> bool {
+    matches!(reach, Reach::Readable | Reach::Partial)
+}
+
 fn display(f: &Finding) -> String {
     format!("~/{}", f.location.rel)
 }
@@ -188,12 +194,20 @@ fn print_text(findings: &[Finding], chain: &[(u32, String)]) {
     }
     println!();
     for f in findings.iter().filter(|f| f.reach != Reach::Absent) {
-        let flag = if f.location.sensitive && f.reach == Reach::Readable { "!" } else { " " };
+        let flag = if f.location.sensitive && open(f.reach) { "!" } else { " " };
         println!("{flag} {:<20} {:<17} {}", f.reach.as_str(), f.location.category, display(f));
     }
-    let readable = findings.iter().filter(|f| f.location.sensitive && f.reach == Reach::Readable).count();
+    let readable = findings.iter().filter(|f| f.location.sensitive && open(f.reach)).count();
     let absent = findings.iter().filter(|f| f.reach == Reach::Absent).count();
-    println!("\n{readable} sensitive location(s) readable (marked !); {absent} not present.");
+    let count = |r: Reach| findings.iter().filter(|f| f.reach == r).count();
+    let mut extra = String::new();
+    if count(Reach::Partial) > 0 {
+        extra += &format!("; {} partly readable", count(Reach::Partial));
+    }
+    if count(Reach::Listable) > 0 {
+        extra += &format!("; {} listable only", count(Reach::Listable));
+    }
+    println!("\n{readable} sensitive location(s) readable (marked !){extra}; {absent} not present.");
 }
 
 fn esc(s: &str) -> String {

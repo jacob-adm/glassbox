@@ -23,6 +23,44 @@ fn readable_directory_is_readable() {
 }
 
 #[test]
+fn directory_whose_files_are_all_refused_is_listable_only() {
+    if is_root() {
+        eprintln!("skipped: root bypasses permission bits");
+        return;
+    }
+    let dir = scratch("listable");
+    for name in ["a", "b"] {
+        fs::write(dir.join(name), "x").unwrap();
+        fs::set_permissions(dir.join(name), fs::Permissions::from_mode(0o000)).unwrap();
+    }
+    assert_eq!(probe(&dir), Reach::Listable);
+    assert_eq!(probe(&dir).as_str(), "listable-only");
+}
+
+#[test]
+fn directory_with_files_that_open_and_files_refused_is_partly_readable() {
+    if is_root() {
+        eprintln!("skipped: root bypasses permission bits");
+        return;
+    }
+    let dir = scratch("mixed");
+    fs::write(dir.join("locked"), "x").unwrap();
+    fs::set_permissions(dir.join("locked"), fs::Permissions::from_mode(0o000)).unwrap();
+    fs::write(dir.join("open"), "x").unwrap();
+    assert_eq!(probe(&dir), Reach::Partial);
+    assert_eq!(probe(&dir).as_str(), "partly-readable");
+    fs::set_permissions(dir.join("locked"), fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(probe(&dir), Reach::Readable);
+}
+
+#[test]
+fn directory_holding_only_subdirectories_is_readable() {
+    let dir = scratch("subdirs");
+    fs::create_dir(dir.join("inner")).unwrap();
+    assert_eq!(probe(&dir), Reach::Readable);
+}
+
+#[test]
 fn missing_path_is_absent() {
     assert_eq!(probe(&scratch("missing").join("nope")), Reach::Absent);
 }

@@ -1,7 +1,8 @@
 //! Reach audit: what could a process started like this one read?
 //!
-//! Each location is probed by opening it read-only. Directories are opened
-//! but never listed, files are opened but never read, nothing is written.
+//! Each location is probed by opening it read-only. Files are opened but
+//! never read, and nothing is written. A directory is listed only to try
+//! opening a few of its files; their names are never printed or kept.
 //! A child process (an agent) started from the same parent inherits the same
 //! user, permissions and, on macOS, the privacy grants of the responsible app,
 //! so this process's reach is the agent's reach.
@@ -16,6 +17,10 @@ const EACCES: i32 = 13;
 pub enum Reach {
     /// The open succeeded.
     Readable,
+    /// A directory in which some entries open and others are refused.
+    Partial,
+    /// A directory that can be listed while every entry tried in it is refused.
+    Listable,
     /// EPERM: blocked by a privacy control or sandbox (macOS TCC, SIP, Seatbelt).
     DeniedPrivacy,
     /// EACCES: blocked by ordinary permissions or ACLs.
@@ -30,6 +35,8 @@ impl Reach {
     pub fn as_str(&self) -> String {
         match self {
             Reach::Readable => "readable".into(),
+            Reach::Partial => "partly-readable".into(),
+            Reach::Listable => "listable-only".into(),
             Reach::DeniedPrivacy => "denied-privacy".into(),
             Reach::DeniedPermissions => "denied-permissions".into(),
             Reach::Absent => "absent".into(),
@@ -38,11 +45,44 @@ impl Reach {
     }
 }
 
+/// How many entries of a directory are looked at before deciding.
+const DIR_SAMPLE: usize = 32;
+
+/// A directory that can be listed is judged by its entries, as a sandbox can
+/// show a directory while refusing some or all of what it holds. Readable:
+/// every file tried opens, or there is none to try. Partly readable: some
+/// open and some are refused. Listable only: every entry tried is refused.
+fn probe_dir(path: &Path) -> std::io::Result<Reach> {
+    let denied = |e: &std::io::Error| matches!(e.raw_os_error(), Some(EPERM) | Some(EACCES));
+    let (mut opened, mut refused) = (0, 0);
+    for entry in fs::read_dir(path)?.take(DIR_SAMPLE) {
+        let Ok(entry) = entry else { continue };
+        let file = entry.path();
+        match fs::symlink_metadata(&file) {
+            Ok(m) if m.is_file() => match crate::safe::open_nonblocking(&file) {
+                Ok(_) => opened += 1,
+                Err(e) if denied(&e) => refused += 1,
+                Err(_) => {}
+            },
+            Err(e) if denied(&e) => refused += 1,
+            _ => {}
+        }
+    }
+    Ok(match (opened, refused) {
+        (_, 0) => Reach::Readable,
+        (0, _) => Reach::Listable,
+        _ => Reach::Partial,
+    })
+}
+
 /// Open `path` read-only without reading anything from it.
 pub fn probe(path: &Path) -> Reach {
     let opened = match fs::symlink_metadata(path) {
         Err(e) if e.kind() == ErrorKind::NotFound => return Reach::Absent,
-        Ok(m) if m.is_dir() => fs::read_dir(path).map(drop),
+        Ok(m) if m.is_dir() => match probe_dir(path) {
+            Ok(reach) => return reach,
+            Err(e) => Err(e),
+        },
         _ => crate::safe::open_nonblocking(path).map(drop),
     };
     match opened {

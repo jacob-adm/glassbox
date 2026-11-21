@@ -10,6 +10,7 @@ const USAGE: &str = "usage: glassbox reach  [--json] [--strict] [--since FILE] [
        glassbox persist [--save FILE | --since FILE [--strict]] [--json] [--home DIR] [--repo DIR]...
        glassbox watch [TRANSCRIPT] [--once] [--out DIR] [--loop N] [--spike TOKENS] [--failures N]
                       [--pid PID [--pause]] [--repo DIR]... [--home DIR]
+       glassbox --version
 
 watch   Follows a local agent session transcript (default: the newest Claude Code
         session) from its end. When an agent repeats an identical tool call --loop
@@ -60,6 +61,10 @@ struct Args {
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let command = args.first().map(String::as_str);
+    if command == Some("--version") && args.len() == 1 {
+        println!("glassbox {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
     if !matches!(command, Some("reach" | "models" | "persist" | "watch")) {
         eprintln!("{USAGE}");
         return ExitCode::from(2);

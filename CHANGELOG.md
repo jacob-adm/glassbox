@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 - 2026-11-21
 
 - `reach`: a directory is judged by its entries. Up to 32 are tried, and the directory is reported
   as `partly-readable` when some open and others are refused, or `listable-only` when all are

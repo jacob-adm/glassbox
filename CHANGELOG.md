@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- `reach`: a directory is judged by its entries. Up to 32 are tried, and the directory is reported
+  as `partly-readable` when some open and others are refused, or `listable-only` when all are
+  refused. It used to be `readable` whenever the directory itself could be opened, which overstated
+  what a sandbox leaves reachable. `--strict` counts `partly-readable` as readable. Entry names are
+  never printed or kept.
+
 ## 0.4.0 - 2026-11-20
 
 - `watch`: with `--pid`, each capture adds `connections.txt`, the open TCP and UDP connections

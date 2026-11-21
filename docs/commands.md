@@ -13,7 +13,7 @@ macOS, the privacy grants of the responsible app.
 | Option | Effect |
 |---|---|
 | `--json` | Print JSON instead of the text report |
-| `--strict` | Exit 1 if any sensitive location is `readable` |
+| `--strict` | Exit 1 if any sensitive location is `readable` or `partly-readable` |
 | `--home DIR` | Resolve locations under `DIR` instead of `$HOME` |
 
 ### What it does to each location
@@ -30,7 +30,9 @@ A symlink is followed, as an agent's open would follow it, so the result is for 
 
 | Result | errno | Meaning |
 |---|---|---|
-| `readable` | – | The open succeeded |
+| `readable` | – | The open succeeded. For a directory: every file tried in it opened, or it held none to try |
+| `partly-readable` | – | A directory in which some entries opened and others were refused |
+| `listable-only` | – | A directory that can be listed while every entry tried in it was refused |
 | `denied-privacy` | EPERM | A privacy control or sandbox refused it (macOS TCC, Seatbelt, SIP) |
 | `denied-permissions` | EACCES | File permissions or ACLs refused it |
 | `absent` | ENOENT | Nothing at that path |

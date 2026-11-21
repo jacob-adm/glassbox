@@ -41,8 +41,10 @@ profiles, mail, messages, photos, and the macOS protected folders) read-only, fr
 A child process started the same way, such as an agent, inherits the same user, permissions and
 privacy grants, so glassbox's reach is the agent's reach.
 
-Directories are opened but never listed, files are opened but never read, and nothing is written.
-Each location is reported as `readable`, `denied-privacy` (EPERM: a privacy control or sandbox),
+Files are opened but never read, and nothing is written. A directory is listed only to try opening
+up to 32 of its entries; their names are never printed or kept. Each location is reported as
+`readable`, `partly-readable` or `listable-only` (a directory in which some or all entries are
+refused, as inside a sandbox), `denied-privacy` (EPERM: a privacy control or sandbox),
 `denied-permissions` (EACCES: file permissions) or `absent`. The report also shows the process chain
 and, on macOS, the app whose privacy grants apply.
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.1 - 2026-11-21
+
+- `glassbox --version` prints the version and exits 0. It used to print the usage and exit 2.
+
 ## 0.5.0 - 2026-11-21
 
 - `reach`: a directory is judged by its entries. Up to 32 are tried, and the directory is reported

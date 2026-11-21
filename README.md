@@ -7,7 +7,7 @@ macOS, the privacy grants (such as Full Disk Access) of the app it was launched 
 that reach before you start the agent, and reports how much of each local AI model is already in
 memory, and shows what an agent session set up to run again later. It is a single Rust binary with no dependencies.
 
-Status: 0.5.0. Four commands: `reach`, `models`, `persist` and `watch`.
+Status: 0.5.1. Four commands: `reach`, `models`, `persist` and `watch`.
 
 ## Install
 

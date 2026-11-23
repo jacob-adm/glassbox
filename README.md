@@ -9,6 +9,12 @@ memory, and shows what an agent session set up to run again later. It is a singl
 
 Status: 0.5.1. Four commands: `reach`, `models`, `persist` and `watch`.
 
+## Requirements
+
+- macOS, or Linux on a 64-bit x86-64, ARM64, RISC-V, LoongArch, POWER or s390x machine.
+- Rust 1.85 or later to build.
+- Nothing else at run time. On macOS the process chain comes from `ps`; on Linux, from `/proc`.
+
 ## Install
 
 With Homebrew (macOS on Apple silicon, Linux x86-64 and ARM64):
@@ -27,12 +33,6 @@ Or build from a clone of this repository:
 ```
 cargo install --path .
 ```
-
-## Requirements
-
-- macOS, or Linux on a 64-bit x86-64, ARM64, RISC-V, LoongArch, POWER or s390x machine.
-- Rust 1.85 or later to build.
-- Nothing else at run time. On macOS the process chain comes from `ps`; on Linux, from `/proc`.
 
 ## How it works
 

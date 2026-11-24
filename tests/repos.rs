@@ -4,6 +4,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod common;
+
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("glassbox-repos-{}-{name}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
@@ -14,7 +16,8 @@ fn scratch(name: &str) -> PathBuf {
 fn persist(home: &Path, repo: &Path, extra: &[&str]) -> (i32, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_glassbox"))
         .arg("persist").args(extra).arg("--home").arg(home).arg("--repo").arg(repo).output().unwrap();
-    (out.status.code().unwrap(), String::from_utf8_lossy(&out.stdout).into_owned())
+    let result = (out.status.code().unwrap(), String::from_utf8_lossy(&out.stdout).into_owned());
+    if extra.contains(&"--since") { common::home_only(result) } else { result }
 }
 
 /// A normal clone: `.git` is a directory.

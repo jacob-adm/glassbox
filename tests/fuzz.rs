@@ -5,6 +5,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
+mod common;
+
 /// Deterministic xorshift64* so failures reproduce from the seed.
 struct Rng(u64);
 impl Rng {
@@ -47,22 +49,24 @@ fn persist_survives_a_hostile_claude_json() {
     let run = |args: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_glassbox")).arg("persist").args(args).arg("--home").arg(&home).output().unwrap()
     };
+    let since = || {
+        let out = run(&["--since", snap.to_str().unwrap(), "--strict", "--json"]);
+        common::home_only((out.status.code().unwrap(), String::from_utf8_lossy(&out.stdout).into_owned()))
+    };
     assert_eq!(run(&["--save", snap.to_str().unwrap()]).status.code(), Some(0));
     // A subtree past the depth limit could hide a hook, so changing it is reported, without crashing.
     fs::write(home.join(".claude.json"), "[".repeat(200_001) + &"]".repeat(200_001)).unwrap();
-    let out = run(&["--since", snap.to_str().unwrap(), "--strict", "--json"]);
-    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stdout));
+    let (code, json) = since();
+    assert_eq!(code, 1, "{json}");
     // Still reported on a second run; restoring the original content is not a change.
-    let out = run(&["--since", snap.to_str().unwrap(), "--strict", "--json"]);
-    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(since().0, 1);
     fs::write(home.join(".claude.json"), "[".repeat(200_000) + &"]".repeat(200_000)).unwrap();
-    let out = run(&["--since", snap.to_str().unwrap(), "--strict", "--json"]);
-    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
+    let (code, json) = since();
+    assert_eq!(code, 0, "{json}");
     // A hook added next to the deep subtree is caught.
     fs::write(home.join(".claude.json"), format!(r#"{{"x":{},"hooks":{{"Stop":"curl example.invalid"}}}}"#, "[".repeat(200_000) + &"]".repeat(200_000))).unwrap();
-    let out = run(&["--since", snap.to_str().unwrap(), "--strict", "--json"]);
-    let json = String::from_utf8_lossy(&out.stdout);
-    assert_eq!(out.status.code(), Some(1), "{json}");
+    let (code, json) = since();
+    assert_eq!(code, 1, "{json}");
     assert!(json.contains("~/.claude.json#mcpServers,hooks"), "{json}");
 }
 

@@ -4,6 +4,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+mod common;
+
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("glassbox-persist-{}-{name}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
@@ -25,7 +27,7 @@ fn save(home: &Path) -> PathBuf {
 /// (exit code, JSON) of `persist --since SNAP --strict --json`.
 fn since(home: &Path, snap: &Path) -> (i32, String) {
     let out = glassbox(&["--since", snap.to_str().unwrap(), "--strict", "--json"], home);
-    (out.status.code().unwrap(), String::from_utf8(out.stdout).unwrap())
+    common::home_only((out.status.code().unwrap(), String::from_utf8(out.stdout).unwrap()))
 }
 
 /// A per-user location that runs a program at login on this platform.
@@ -128,8 +130,8 @@ fn repo_git_hooks_are_watched_with_repo_option() {
     assert_eq!(run(&["--save", snap.to_str().unwrap()]).status.code(), Some(0));
     fs::write(repo.join(".git/hooks/post-checkout"), "#!/bin/sh\ncurl example.invalid\n").unwrap();
     let out = run(&["--since", snap.to_str().unwrap(), "--strict", "--json"]);
-    let json = String::from_utf8(out.stdout).unwrap();
-    assert_eq!(out.status.code(), Some(1), "{json}");
+    let (code, json) = common::home_only((out.status.code().unwrap(), String::from_utf8(out.stdout).unwrap()));
+    assert_eq!(code, 1, "{json}");
     assert!(json.contains("\"category\":\"git hook\"") && json.contains("post-checkout"), "{json}");
 }
 

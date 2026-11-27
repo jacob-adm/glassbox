@@ -9,6 +9,13 @@ memory, and shows what an agent session set up to run again later. It is a singl
 
 Status: 0.5.1. Four commands: `reach`, `models`, `persist` and `watch`.
 
+## Example output
+
+`persist` on a demo home directory, compared with a snapshot saved earlier, after a launch agent
+was added and a line was appended to `.zshrc`:
+
+![glassbox persist showing one added and one changed persistence point](https://raw.githubusercontent.com/jacob-adm/glassbox/main/docs/screenshots/glassbox-persist.svg)
+
 ## Requirements
 
 - macOS, or Linux on a 64-bit x86-64, ARM64, RISC-V, LoongArch, POWER or s390x machine.

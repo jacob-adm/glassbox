@@ -93,6 +93,37 @@ file that is not a `reach --json` report is refused with exit status 2.
 Inside a sandbox the process list usually cannot be read. The report then says the process chain
 is not available, and the JSON `chain` is empty.
 
+### Audit result output
+
+`--audit-json`, for `reach` and `persist --since`, prints one JSON object on one line in the
+audit result format (`audit-result/1`), for a CI job or an agent that runs several audit tools
+and reads their results the same way. Each `--json` record becomes a finding with a rule id, a
+severity, one sentence and its evidence, and is kept unchanged under `record`. One finding of
+`glassbox reach --audit-json --home /tmp/demo`, for a home that holds `~/.ssh`:
+
+```json
+{"rule":"glassbox.reach.readable","severity":"high","message":"Sensitive location ~/.ssh (credentials) is readable","evidence":{"path":"~/.ssh"},"record":{"category":"credentials","sensitive":true,"path":"~/.ssh","reach":"readable"}}
+```
+
+The object around the findings is
+`{"format":"audit-result/1","tool":{"name":"glassbox","version":…},"target":{"kind":"host","name":HOME},"exit":…,"findings":[…],"errors":[…]}`,
+where `name` is the home directory audited (`--home DIR` or `$HOME`).
+
+| Command | `rule` | `severity` |
+|---|---|---|
+| `reach` | `glassbox.reach.RESULT`, for example `glassbox.reach.readable` | `high` for a sensitive location that is `readable` or `partly-readable`; `info` for every other result |
+| `persist --since` | `glassbox.persist.CHANGE`: `added`, `changed` or `removed` | `high` for `added` and `changed`; `info` for `removed` |
+
+The severity follows exactly what `--strict` fails on, so `--audit-json` exits as `--strict`
+does: 1 if any finding is `high`, 0 if none. Each message is one sentence, such as
+`Persistence point ~/.zshrc (shell startup) changed since the snapshot`; with `reach --since`,
+a changed result adds what it was (`; it was absent`). `evidence` holds `path`.
+
+The object is printed on every run, also on an error, with no findings, the message in `errors`
+and exit status 2: a usage error (including `--json` with `--audit-json`, and `persist
+--audit-json` without `--since`), `HOME` unset, or a `--since` file that cannot be read. The
+message is also written to standard error, as without the flag.
+
 ### Exit status
 
 | Status | When |
@@ -270,6 +301,9 @@ modification time, is not a change.
 ```
 
 Without `--since`, `--json` prints `{"items":[{"category":…,"path":…,"sha256":…}]}`.
+
+With `--since`, `--audit-json` prints the changes as one audit result object instead; see
+[Audit result output](#audit-result-output).
 
 ### Exit status
 

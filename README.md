@@ -127,6 +127,7 @@ glassbox models
 
 ## Documentation
 
+- [For coding agents](docs/AGENTS.md): how an agent runs glassbox, reads `--audit-json` and cites the evidence.
 - [Commands](docs/commands.md): each command's options, output and exit status.
 - [Suite study](docs/suite-study.md): every Sysinternals tool assessed for a macOS/Linux port and for
   its value to agent tooling and inference.

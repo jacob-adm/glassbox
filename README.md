@@ -9,6 +9,11 @@ memory, and shows what an agent session set up to run again later. It is a singl
 
 Status: 0.6.0. Four commands: `reach`, `models`, `persist` and `watch`.
 
+It is one of six audit tools that print the same result format with `--audit-json`.
+[suite-gate](https://github.com/jacob-adm/suite-gate) runs them together, as a command, a GitHub
+Action or an MCP server for coding agents; its session check uses `glassbox persist` to report
+what an agent session left behind.
+
 ## Example output
 
 `persist` on a demo home directory, compared with a snapshot saved earlier, after a launch agent

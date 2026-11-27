@@ -78,6 +78,7 @@ before it continues. Transcripts are read for structure only; their content is n
 | `glassbox reach` | Report what a process started like this one can read |
 | `glassbox reach --json` | The same report as JSON, for scripts and agent tooling |
 | `glassbox reach --strict` | Exit 1 if any sensitive location is readable |
+| `glassbox reach --audit-json` | One object in the audit result format shared with other audit tools: each location with a rule, severity, message and evidence; exits as `--strict` |
 | `glassbox reach --since FILE` | Compare with an earlier `reach --json` report, for example one taken outside a sandbox |
 | `glassbox reach --home DIR` | Audit `DIR` instead of `$HOME` |
 | `glassbox models` | List local models and how much of each is in the page cache |
@@ -86,6 +87,7 @@ before it continues. Transcripts are read for structure only; their content is n
 | `glassbox persist` | List persistence points |
 | `glassbox persist --save FILE` | Save a snapshot of them |
 | `glassbox persist --since FILE --strict` | Report what was added, changed or removed; exit 1 if anything was added or changed |
+| `glassbox persist --since FILE --audit-json` | The same comparison as one audit result object; exits as `--strict` |
 | `glassbox watch` | Follow the newest local agent session and capture the machine's state on a trigger |
 | `glassbox watch --pid PID --pause` | Also stop the agent process when a trigger fires |
 | `glassbox watch TRANSCRIPT --once` | Scan a whole transcript; exit 1 if any trigger fires |

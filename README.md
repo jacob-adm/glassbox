@@ -14,7 +14,7 @@ Status: 0.6.0. Four commands: `reach`, `models`, `persist` and `watch`.
 `persist` on a demo home directory, compared with a snapshot saved earlier, after a launch agent
 was added and a line was appended to `.zshrc`:
 
-![glassbox persist showing one added and one changed persistence point](https://raw.githubusercontent.com/jacob-adm/glassbox/main/docs/screenshots/glassbox-persist.svg)
+<p align="center"><img src="https://raw.githubusercontent.com/jacob-adm/glassbox/main/docs/screenshots/glassbox-persist.svg" alt="glassbox persist showing one added and one changed persistence point"></p>
 
 ## Requirements
 

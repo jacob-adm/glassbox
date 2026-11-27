@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.0 - 2026-11-26
+
+- `reach --audit-json` and `persist --since --audit-json`: one JSON object in the audit result
+  format (`audit-result/1`) shared with other audit tools. Each `--json` record becomes a finding
+  with a rule id, a severity (`high` for exactly what `--strict` fails on, `info` otherwise), one
+  sentence and the path as evidence, so the exit status is the one `--strict` gives. The object
+  is printed on every run, also on a usage or input error. Default output, `--json` and
+  `--strict` are unchanged.
+
 ## 0.5.1 - 2026-11-21
 
 - `glassbox --version` prints the version and exits 0. It used to print the usage and exit 2.

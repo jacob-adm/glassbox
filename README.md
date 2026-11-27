@@ -1,5 +1,7 @@
 # glassbox
 
+[![Test](https://github.com/jacob-adm/glassbox/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/jacob-adm/glassbox/actions/workflows/test.yml) [![Release](https://img.shields.io/github/v/release/jacob-adm/glassbox?style=flat-square&color=0F6378&label=release)](https://github.com/jacob-adm/glassbox/releases/latest) [![Licence](https://img.shields.io/github/license/jacob-adm/glassbox?style=flat-square&color=0F6378&label=licence)](https://github.com/jacob-adm/glassbox#license)
+
 glassbox audits what AI agents and other local processes can access on macOS and Linux.
 
 An agent started from your terminal runs as you. It inherits your files, your credentials and, on

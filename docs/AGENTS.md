@@ -38,8 +38,8 @@ glassbox persist --save before.snapshot --repo .
 glassbox persist --since before.snapshot --repo . --audit-json
 ```
 
-`glassbox watch TRANSCRIPT --once` scans an agent transcript for loops, output spikes and runs of
-failed tool calls; it has no `--audit-json`.
+`glassbox watch TRANSCRIPT --once --audit-json` scans an agent transcript for loops, output spikes
+and runs of failed tool calls, and reports each as a finding at its transcript line.
 
 ## Read the result
 
@@ -50,9 +50,10 @@ failed tool calls; it has no `--audit-json`.
 | --- | --- | --- |
 | `reach` | `glassbox.reach.RESULT`, for example `glassbox.reach.readable` | `high` for a sensitive location that is `readable` or `partly-readable`; `info` otherwise |
 | `persist --since` | `glassbox.persist.CHANGE`: `added`, `changed` or `removed` | `high` for `added` and `changed`; `info` for `removed` |
+| `watch --once` | `glassbox.watch.KIND`: `loop`, `spike` or `failures` | `medium` |
 
-The severity follows exactly what `--strict` fails on, so the exit status is the one `--strict`
-gives. Each `message` is one sentence, for example `Sensitive location ~/.ssh (credentials) is
+For `reach` and `persist` the severity follows exactly what `--strict` fails on, so the exit status
+is the one `--strict` gives; for `watch --once` it is the one `--once` gives. Each `message` is one sentence, for example `Sensitive location ~/.ssh (credentials) is
 readable` or `Persistence point ~/.zshrc (shell startup) changed since the snapshot`. `evidence`
 holds `path`. [Commands](commands.md#audit-result-output) has the full format.
 

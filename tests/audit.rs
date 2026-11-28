@@ -56,7 +56,10 @@ fn check(code: i32, out: &str) -> Value {
     for f in list(&top["findings"]) {
         let keys: Vec<&str> = obj(f).keys().map(String::as_str).collect();
         assert_eq!(keys, ["evidence", "message", "record", "rule", "severity"]);
-        assert_eq!(obj(&obj(f)["evidence"])["path"], obj(&obj(f)["record"])["path"]);
+        // reach and persist records carry the path; a watch record names the transcript instead.
+        let record = obj(&obj(f)["record"]);
+        let shown = record.get("path").or_else(|| record.get("transcript")).expect("a path in the record");
+        assert_eq!(&obj(&obj(f)["evidence"])["path"], shown);
     }
     doc
 }
@@ -207,4 +210,68 @@ fn documented_example_is_real_output() {
     let shown = parse(block.trim_end()).expect("the example is JSON");
     let got = parse(got.trim_end()).unwrap();
     assert!(list(&obj(&got)["findings"]).contains(&shown), "{block}");
+}
+
+/// One assistant turn calling `tool`, in Claude Code's transcript format.
+fn call(id: usize, tool: &str, input: &str) -> String {
+    format!(
+        r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"t{id}","name":"{tool}","input":{input}}}],"usage":{{"input_tokens":10,"output_tokens":50}}}}}}"#
+    )
+}
+
+fn tool_result(id: usize) -> String {
+    format!(
+        r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"t{id}","content":"private output","is_error":false}}]}}}}"#
+    )
+}
+
+/// N identical Bash calls with their results; the input holds a word that must never be printed.
+fn transcript(dir: &Path, n: usize) -> PathBuf {
+    let lines: Vec<String> =
+        (0..n).flat_map(|i| [call(i, "Bash", r#"{"command":"echo hidden-input"}"#), tool_result(i)]).collect();
+    let path = dir.join(format!("session-{n}.jsonl"));
+    fs::write(&path, lines.join("\n") + "\n").unwrap();
+    path
+}
+
+#[test]
+fn watch_once_reports_a_loop_with_its_line() {
+    let home = scratch("watch-loop");
+    let t = transcript(&home, 4);
+    let (code, out, _) = run(&["watch", t.to_str().unwrap(), "--once", "--audit-json", "--home", home.to_str().unwrap()]);
+    let doc = check(code, &out);
+    assert_eq!(code, 1);
+    let found = list(&obj(&doc)["findings"]);
+    assert_eq!(found.len(), 1, "{out}");
+    let f = obj(&found[0]);
+    assert_eq!((text(&f["rule"]), text(&f["severity"])), ("glassbox.watch.loop", "medium"));
+    assert_eq!(text(&f["message"]), "Agent transcript loop: 4 identical Bash calls in a row (line 7)");
+    assert_eq!(obj(&f["evidence"])["line"], Value::Num("7".into()));
+    assert_eq!(text(&obj(&f["evidence"])["path"]), t.to_str().unwrap());
+    assert!(!out.contains("hidden-input") && !out.contains("private output"), "content leaked: {out}");
+}
+
+#[test]
+fn watch_once_with_nothing_fired_exits_0() {
+    let home = scratch("watch-clean");
+    let t = transcript(&home, 3);
+    let (code, out, _) = run(&["watch", t.to_str().unwrap(), "--once", "--audit-json", "--home", home.to_str().unwrap()]);
+    check(code, &out);
+    assert_eq!(code, 0);
+}
+
+#[test]
+fn watch_audit_json_needs_once_and_a_known_transcript() {
+    let home = scratch("watch-errors");
+    let h = home.to_str().unwrap();
+    let t = transcript(&home, 1);
+    let (code, out, _) = run(&["watch", t.to_str().unwrap(), "--audit-json", "--home", h]);
+    let doc = check(code, &out);
+    assert_eq!(text(&obj(&list(&obj(&doc)["errors"])[0])["message"]), "--audit-json needs --once");
+    let odd = home.join("odd.jsonl");
+    fs::write(&odd, "not a transcript\n").unwrap();
+    let (code, out, err) = run(&["watch", odd.to_str().unwrap(), "--once", "--audit-json", "--home", h]);
+    let doc = check(code, &out);
+    assert!(text(&obj(&list(&obj(&doc)["errors"])[0])["message"]).contains("not a transcript format glassbox knows"));
+    assert!(err.contains("not a transcript format glassbox knows"));
 }

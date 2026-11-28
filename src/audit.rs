@@ -14,6 +14,8 @@ pub struct Finding {
     pub severity: &'static str,
     pub message: String,
     pub path: String,
+    /// The line in the file at `path`, when the finding is about one line.
+    pub line: Option<u64>,
     pub record: String,
 }
 
@@ -34,11 +36,12 @@ pub fn render(home: &str, findings: &[Finding], errors: &[String]) -> String {
         .iter()
         .map(|f| {
             format!(
-                "{{\"rule\":\"{}\",\"severity\":\"{}\",\"message\":\"{}\",\"evidence\":{{\"path\":\"{}\"}},\"record\":{}}}",
+                "{{\"rule\":\"{}\",\"severity\":\"{}\",\"message\":\"{}\",\"evidence\":{{\"path\":\"{}\"{}}},\"record\":{}}}",
                 json_escape(&f.rule),
                 f.severity,
                 json_escape(&f.message),
                 json_escape(&f.path),
+                f.line.map_or(String::new(), |l| format!(",\"line\":{l}")),
                 f.record
             )
         })
@@ -76,6 +79,7 @@ pub fn reach_finding(category: &str, sensitive: bool, path: &str, reach: &str, w
         severity: if sensitive && open { "high" } else { "info" },
         message,
         path: path.to_string(),
+        line: None,
         record,
     }
 }
@@ -93,6 +97,20 @@ pub fn persist_finding(change: &str, category: &str, path: &str, record: String)
         severity: if change == "removed" { "info" } else { "high" },
         message: format!("Persistence point {path} ({category}) {verb} since the snapshot"),
         path: path.to_string(),
+        line: None,
+        record,
+    }
+}
+
+/// `watch --once`: a trigger in an agent transcript is medium. It is the agent's behaviour, not
+/// an exposure; it still sets exit 1, as `--once` does.
+pub fn watch_finding(kind: &str, description: &str, transcript: &str, line: u64, record: String) -> Finding {
+    Finding {
+        rule: format!("glassbox.watch.{kind}"),
+        severity: "medium",
+        message: format!("Agent transcript {description}"),
+        path: transcript.to_string(),
+        line: if line > 0 { Some(line) } else { None },
         record,
     }
 }

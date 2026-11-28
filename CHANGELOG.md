@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.0 - 2026-11-27
+
+- `watch --once --audit-json`: the transcript scan as one audit result object (`audit-result/1`).
+  Each trigger is a `medium` finding, `glassbox.watch.loop`, `.spike` or `.failures`, with its
+  transcript line as evidence and the trigger as `trigger.json` has it as the record; no
+  transcript content is copied. The exit status is the one `--once` gives. Without `--once`,
+  `--audit-json` is a usage error.
+
 ## 0.6.0 - 2026-11-26
 
 - `reach --audit-json` and `persist --since --audit-json`: one JSON object in the audit result

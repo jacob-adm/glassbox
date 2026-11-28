@@ -1,5 +1,7 @@
 [package]
-name = "glassbox"
+# Published as glassbox-cli: the name glassbox is taken on crates.io and PyPI.
+# The library and the command keep the name glassbox.
+name = "glassbox-cli"
 version = "0.7.0"
 edition = "2024"
 rust-version = "1.85"
@@ -7,5 +9,13 @@ description = "Security and systems auditing for AI agents and local workloads o
 license = "Apache-2.0"
 repository = "https://github.com/jacob-adm/glassbox"
 readme = "README.md"
+
+[lib]
+name = "glassbox"
+path = "src/lib.rs"
+
+[[bin]]
+name = "glassbox"
+path = "src/main.rs"
 
 [dependencies]

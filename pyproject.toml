@@ -1,0 +1,21 @@
+# Builds a wheel that holds the glassbox binary, so `pip install glassbox-cli` puts the
+# glassbox command on PATH. Name, version and metadata come from Cargo.toml.
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "glassbox-cli"
+requires-python = ">=3.8"
+dynamic = ["version", "description", "license", "readme", "urls"]
+classifiers = [
+    "Environment :: Console",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Rust",
+    "Topic :: Security",
+    "Topic :: System :: Monitoring",
+]
+
+[tool.maturin]
+bindings = "bin"

@@ -82,6 +82,26 @@ fn core_hooks_path_redirects_which_hooks_are_watched() {
 }
 
 #[test]
+fn sample_hooks_are_not_persistence_points() {
+    let (home, root) = (scratch("home-sample"), scratch("sample"));
+    let repo = clone(&root.join("r"));
+    fs::write(repo.join(".git/hooks/pre-push"), "#!/bin/sh\n").unwrap();
+    let (code, json) = persist(&home, &repo, &["--json"]);
+    assert_eq!(code, 0, "{json}");
+    assert!(json.contains("<repo>/.git/hooks/pre-push"), "{json}");
+    assert!(!json.contains(".sample"), "{json}");
+    // Moving core.hooksPath away reports the config change, not the sample files as removed.
+    let snap = root.join("r.snapshot");
+    assert_eq!(persist(&home, &repo, &["--save", snap.to_str().unwrap()]).0, 0);
+    fs::write(repo.join(".git/config"), "[core]\n\tbare = false\n\thooksPath = /nonexistent\n").unwrap();
+    let (code, json) = persist(&home, &repo, &["--since", snap.to_str().unwrap(), "--strict", "--json"]);
+    assert_eq!(code, 1, "{json}");
+    assert!(json.contains("\"category\":\"git config\""), "{json}");
+    assert!(json.contains("\"change\":\"removed\",\"category\":\"git hook\",\"path\":\"<repo>/.git/hooks/pre-push\""), "{json}");
+    assert!(!json.contains(".sample"), "{json}");
+}
+
+#[test]
 fn agent_instruction_files_in_the_repo_and_home_are_watched() {
     let (home, root) = (scratch("home-instr"), scratch("instr"));
     let repo = clone(&root.join("r"));

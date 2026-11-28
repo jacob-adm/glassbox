@@ -144,8 +144,8 @@ pub fn collect(home: &Path, repos: &[PathBuf]) -> Vec<Item> {
         c.file_in("git config", &git_dir.join("config.worktree"), Some((&git_dir, &git_tag)));
         match hooks_path(home, repo, &common_dir, &git_dir) {
             // Inside the repository: <repo>/...; elsewhere: its own path (absolute or ~/...).
-            Some(dir) => c.dir_in("git hook", &dir, 1, Some((repo, &tag))),
-            None => c.dir_in("git hook", &common_dir.join("hooks"), 1, Some((&common_dir, &git_tag))),
+            Some(dir) => c.hooks_in(&dir, Some((repo, &tag))),
+            None => c.hooks_in(&common_dir.join("hooks"), Some((&common_dir, &git_tag))),
         }
         for rel in REPO_AGENT_FILES {
             c.file_in("agent config", &repo.join(rel), Some((repo, &tag)));
@@ -208,6 +208,25 @@ impl Collector<'_> {
                     self.dir_in(category, &p, depth - 1, root)
                 }
                 Ok(m) if !m.is_dir() => self.file_in(category, &p, root),
+                _ => {}
+            }
+        }
+    }
+
+    /// A git hooks directory. Git never runs a file named `*.sample` (the examples `git init`
+    /// writes), so those are not persistence points; everything else is watched as by `dir_in`.
+    fn hooks_in(&mut self, dir: &Path, root: Option<(&Path, &str)>) {
+        let Ok(entries) = fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            let sample = p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with(".sample"));
+            match fs::symlink_metadata(&p) {
+                Ok(m) if m.is_dir() => self.dir_in("git hook", &p, 0, root),
+                Ok(m) if m.file_type().is_symlink() && fs::metadata(&p).is_ok_and(|t| t.is_dir()) => {
+                    self.dir_in("git hook", &p, 0, root)
+                }
+                Ok(_) if sample => {}
+                Ok(_) => self.file_in("git hook", &p, root),
                 _ => {}
             }
         }

@@ -25,3 +25,25 @@ jobs:
       - uses: actions/checkout@v4
       - run: cargo test --locked
       - run: cargo clippy --all-targets --locked -- -D warnings
+
+  wheel:
+    # The pip package: a wheel built from pyproject.toml installs the glassbox command.
+    if: github.event.repository.visibility == 'public'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          args: --release --locked --out dist
+      - name: Install the wheel and run the command
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --disable-pip-version-check dist/*.whl
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          test "$("$RUNNER_TEMP/venv/bin/glassbox" --version)" = "glassbox $version"

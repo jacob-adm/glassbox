@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "glassbox"
+name = "glassbox-cli"
 version = "0.7.0"

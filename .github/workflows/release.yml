@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-# Publishes a version tag to crates.io through trusted publishing: no token is stored anywhere.
-# The publish job runs in the "crates-io" environment, which waits for the owner's approval.
-# It runs only when the repository variable PUBLISH_TO_CRATES is "true". Unset, a tag
-# still builds, tests and packages the crate but publishes nothing.
+# Publishes a version tag as glassbox-cli to crates.io and PyPI through trusted publishing: no
+# token is stored anywhere. Each publish job runs in an environment that waits for the owner's
+# approval ("crates-io", "pypi"), and only when its repository variable (PUBLISH_TO_CRATES,
+# PUBLISH_TO_PYPI) is "true". Unset, a tag still builds, tests and packages but publishes nothing.
 # Hosted jobs run only on the public repository.
 name: release
 
@@ -50,3 +50,61 @@ jobs:
       - run: cargo publish --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+  wheels:
+    needs: build
+    if: github.event.repository.visibility == 'public'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-24.04, target: x86_64}
+          - {os: ubuntu-24.04, target: aarch64}
+          - {os: macos-15, target: aarch64}
+          - {os: macos-15, target: x86_64}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          target: ${{ matrix.target }}
+          manylinux: auto
+          args: --release --locked --out dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wheel-${{ matrix.os }}-${{ matrix.target }}
+          path: dist/*.whl
+
+  sdist:
+    needs: build
+    if: github.event.repository.visibility == 'public'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          command: sdist
+          args: --out dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wheel-sdist
+          path: dist/*.tar.gz
+
+  pypi:
+    needs: [wheels, sdist]
+    if: github.event.repository.visibility == 'public' && vars.PUBLISH_TO_PYPI == 'true'
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      id-token: write   # proves this workflow's identity to PyPI; nothing else
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: wheel-*
+          merge-multiple: true
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3

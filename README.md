@@ -9,7 +9,7 @@ macOS, the privacy grants (such as Full Disk Access) of the app it was launched 
 that reach before you start the agent, and reports how much of each local AI model is already in
 memory, and shows what an agent session set up to run again later. It is a single Rust binary with no dependencies.
 
-Status: 0.6.0. Four commands: `reach`, `models`, `persist` and `watch`.
+Status: 0.7.0. Four commands: `reach`, `models`, `persist` and `watch`.
 
 It is one of six audit tools that print the same result format with `--audit-json`.
 [suite-gate](https://github.com/jacob-adm/suite-gate) runs them together, as a command, a GitHub

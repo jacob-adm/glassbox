@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- `persist`: git's sample hooks (`*.sample` in a hooks directory, as `git init` writes them)
+  are no longer persistence points. Git never runs them, so a moved `core.hooksPath` no longer
+  reports each of them as removed.
+
 ## 0.7.0 - 2026-11-27
 
 - `watch --once --audit-json`: the transcript scan as one audit result object (`audit-result/1`).

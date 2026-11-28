@@ -95,7 +95,7 @@ is not available, and the JSON `chain` is empty.
 
 ### Audit result output
 
-`--audit-json`, for `reach` and `persist --since`, prints one JSON object on one line in the
+`--audit-json`, for `reach`, `persist --since` and `watch --once`, prints one JSON object on one line in the
 audit result format (`audit-result/1`), for a CI job or an agent that runs several audit tools
 and reads their results the same way. Each `--json` record becomes a finding with a rule id, a
 severity, one sentence and its evidence, and is kept unchanged under `record`. One finding of
@@ -113,9 +113,13 @@ where `name` is the home directory audited (`--home DIR` or `$HOME`).
 |---|---|---|
 | `reach` | `glassbox.reach.RESULT`, for example `glassbox.reach.readable` | `high` for a sensitive location that is `readable` or `partly-readable`; `info` for every other result |
 | `persist --since` | `glassbox.persist.CHANGE`: `added`, `changed` or `removed` | `high` for `added` and `changed`; `info` for `removed` |
+| `watch --once` | `glassbox.watch.KIND`: `loop`, `spike` or `failures` | `medium`: the agent's behaviour, not an exposure |
 
-The severity follows exactly what `--strict` fails on, so `--audit-json` exits as `--strict`
-does: 1 if any finding is `high`, 0 if none. Each message is one sentence, such as
+For `reach` and `persist`, the severity follows exactly what `--strict` fails on, so
+`--audit-json` exits as `--strict` does: 1 if any finding is `high`, 0 if none. For `watch --once`
+every trigger is a `medium` finding and the exit status is the one `--once` gives: 1 if any trigger
+fired. A watch finding's `evidence` also holds `line`, its line in the transcript, and its `record`
+is the trigger as `trigger.json` has it; no transcript content is copied. Each message is one sentence, such as
 `Persistence point ~/.zshrc (shell startup) changed since the snapshot`; with `reach --since`,
 a changed result adds what it was (`; it was absent`). `evidence` holds `path`.
 
@@ -335,7 +339,7 @@ With `--since`, `--audit-json` prints the changes as one audit result object ins
 ## `glassbox watch`
 
 ```
-glassbox watch [TRANSCRIPT] [--once] [--out DIR] [--loop N] [--spike TOKENS] [--failures N]
+glassbox watch [TRANSCRIPT] [--once [--audit-json]] [--out DIR] [--loop N] [--spike TOKENS] [--failures N]
                [--pid PID [--pause]] [--repo DIR]... [--home DIR]
 ```
 
@@ -345,6 +349,7 @@ Follows a local agent session and captures the machine's state when the agent go
 |---|---|
 | `TRANSCRIPT` | The session file to follow. Default: the most recently modified `~/.claude/projects/*/*.jsonl` |
 | `--once` | Scan the whole transcript instead of following it; exit 1 if any trigger fires |
+| `--audit-json` | With `--once`: print one audit result object instead of the trigger lines; see [Audit result output](#audit-result-output) |
 | `--out DIR` | Where captures go. Default when following: `~/.local/state/glassbox/captures`. With `--once`, captures are written only if `--out` is given |
 | `--loop N` | Identical tool calls (same tool, same arguments) in a row that count as a loop (default 4) |
 | `--spike TOKENS` | Output tokens in one assistant turn that count as a spike (default 16000) |

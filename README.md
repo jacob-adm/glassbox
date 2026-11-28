@@ -98,6 +98,7 @@ before it continues. Transcripts are read for structure only; their content is n
 | `glassbox watch` | Follow the newest local agent session and capture the machine's state on a trigger |
 | `glassbox watch --pid PID --pause` | Also stop the agent process when a trigger fires |
 | `glassbox watch TRANSCRIPT --once` | Scan a whole transcript; exit 1 if any trigger fires |
+| `glassbox watch TRANSCRIPT --once --audit-json` | The same scan as one audit result object |
 | `glassbox persist --repo DIR` | Also watch a repository's git hooks, git config and agent configs |
 | `glassbox --version` | Print the version |
 

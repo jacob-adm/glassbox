@@ -9,7 +9,7 @@ use std::process::ExitCode;
 const USAGE: &str = "usage: glassbox reach  [--json | --audit-json] [--strict] [--since FILE] [--home DIR]
        glassbox models [--json] [--home DIR] [--dir DIR]...
        glassbox persist [--save FILE | --since FILE [--strict]] [--json | --audit-json] [--home DIR] [--repo DIR]...
-       glassbox watch [TRANSCRIPT] [--once] [--out DIR] [--loop N] [--spike TOKENS] [--failures N]
+       glassbox watch [TRANSCRIPT] [--once [--audit-json]] [--out DIR] [--loop N] [--spike TOKENS] [--failures N]
                       [--pid PID [--pause]] [--repo DIR]... [--home DIR]
        glassbox --version
 
@@ -35,8 +35,8 @@ persist Lists persistence points (launch agents, systemd units, cron, shell
 
   --json     machine-readable output
   --audit-json
-             reach, persist --since: one audit result object (format
-             audit-result/1); exits as --strict does
+             reach, persist --since, watch --once: one audit result object
+             (format audit-result/1); exits as --strict or --once does
   --strict   reach: exit 1 if any sensitive location is readable
              persist --since: exit 1 if anything was added or changed
   --home DIR use DIR instead of $HOME
@@ -75,7 +75,7 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
     // Asked for before parsing, so that a usage error is still written as one object.
-    let audit_asked = matches!(command, Some("reach" | "persist")) && args.iter().any(|x| x == "--audit-json");
+    let audit_asked = matches!(command, Some("reach" | "persist" | "watch")) && args.iter().any(|x| x == "--audit-json");
     let a = match parse_args(command.unwrap_or_default(), &args[1..]) {
         Ok(a) => a,
         Err(msg) => {
@@ -157,7 +157,7 @@ fn parse_args(command: &str, args: &[String]) -> Result<Args, String> {
         let once = |slot: &Option<PathBuf>| if slot.is_some() { Err(format!("{arg} given twice")) } else { Ok(()) };
         match (arg.as_str(), command) {
             ("--json", _) => a.json = true,
-            ("--audit-json", "reach" | "persist") => a.audit = true,
+            ("--audit-json", "reach" | "persist" | "watch") => a.audit = true,
             ("--strict", "reach" | "persist") => a.strict = true,
             ("--home", _) => {
                 once(&a.home)?;
@@ -212,6 +212,9 @@ fn parse_args(command: &str, args: &[String]) -> Result<Args, String> {
     }
     if command == "persist" && a.audit && a.since.is_none() {
         return Err("--audit-json needs --since".into());
+    }
+    if command == "watch" && a.audit && !a.once_scan {
+        return Err("--audit-json needs --once".into());
     }
     Ok(a)
 }
@@ -427,29 +430,40 @@ fn persist_record(c: &Change, i: &persist::Item) -> String {
 fn run_watch(home: &Path, a: &Args) -> ExitCode {
     use glassbox::watch::{self, Context, Detector, Follower};
     use std::io::Write;
+    let home_name = home.display().to_string();
+    let fail = |msg: String| {
+        eprintln!("{msg}");
+        audit_error(a.audit, &home_name, msg)
+    };
     let Some(path) = a.transcript.clone().or_else(|| watch::latest_transcript(home)) else {
-        eprintln!("no transcript given and none found under {}/.claude/projects", home.display());
-        return ExitCode::from(2);
+        return fail(format!("no transcript given and none found under {}/.claude/projects", home.display()));
     };
     match watch::recognised_format(&path) {
         Ok(true) => {}
         Ok(false) => {
-            eprintln!("{}: not a transcript format glassbox knows (Claude Code JSON lines)", path.display());
-            return ExitCode::from(2);
+            return fail(format!("{}: not a transcript format glassbox knows (Claude Code JSON lines)", path.display()));
         }
-        Err(e) => {
-            eprintln!("cannot read {}: {e}", path.display());
-            return ExitCode::from(2);
-        }
+        Err(e) => return fail(format!("cannot read {}: {e}", path.display())),
     }
     let t = &a.thresholds;
     let lines_before = if a.once_scan { 0 } else { watch::line_count(&path).unwrap_or(0) };
     let mut detector = Detector::new(*t, lines_before);
     let mut seq = 0u64;
     let mut fired_any = false;
+    let mut found: Vec<audit::Finding> = Vec::new();
     let mut handle = |trigger: watch::Trigger, ctx: &Context, out: Option<&Path>| {
         fired_any = true;
         seq += 1;
+        if a.audit {
+            // The object is printed once at the end; a capture is still written with --out.
+            if let Some(out) = out {
+                let _ = watch::capture(out, seq, &trigger, ctx);
+            }
+            let shown = path.display().to_string();
+            found.push(audit::watch_finding(trigger.kind, &trigger.describe(), &shown, trigger.line,
+                                            trigger.to_json(&path)));
+            return;
+        }
         let mut line = format!("trigger {}", trigger.describe());
         if let Some(out) = out {
             match watch::capture(out, seq, &trigger, ctx) {
@@ -475,8 +489,10 @@ fn run_watch(home: &Path, a: &Args) -> ExitCode {
             }
         });
         if let Err(e) = scanned {
-            eprintln!("cannot read {}: {e}", path.display());
-            return ExitCode::from(2);
+            return fail(format!("cannot read {}: {e}", path.display()));
+        }
+        if a.audit {
+            return print_audit(&home_name, &found, &[]);
         }
         return if fired_any { ExitCode::from(1) } else { ExitCode::SUCCESS };
     }
